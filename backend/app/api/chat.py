@@ -24,6 +24,12 @@ async def chat_with_finance_agent(
     agent = FinanceQAAgent()
     try:
         response = await agent.answer_query(db=db, user_message=payload.message)
-        return response
+        return ChatResponse(
+            answer=response.get("answer", ""),
+            thought_process=response.get("thought_process", []),
+            tools_used=response.get("tools_used", []),
+            referenced_exceptions=response.get("referenced_exceptions", []),
+            referenced_transactions=response.get("referenced_transactions", []),
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Finance Q&A query failed: {str(e)}")

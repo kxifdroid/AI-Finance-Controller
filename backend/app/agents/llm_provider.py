@@ -244,7 +244,7 @@ class AnthropicClient(BaseLLMClient):
 class GeminiClient(BaseLLMClient):
     """Google Gemini API client implementation via REST."""
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-flash-lite-latest"):
         self.api_key = api_key
         self.model_name = model_name
         self._client: Optional[httpx.AsyncClient] = None
@@ -274,11 +274,42 @@ class GeminiClient(BaseLLMClient):
             }
         }
         client = await self._get_client()
-        resp = await client.post(url, json=payload)
+
+        import asyncio
+        max_attempts = 3
+        resp = None
+        for attempt in range(max_attempts):
+            resp = await client.post(url, json=payload)
+            if resp.status_code != 503:
+                break
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(1.5 * (attempt + 1))
         resp.raise_for_status()
         data = resp.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        return json.loads(text.strip())
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        
+        # Robust cleanup of potential Markdown fences returned by the LLM
+        if text.startswith("```"):
+            # strip start/end fence lines
+            lines = text.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+            
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Try to find first [ or { and last ] or } to slice
+            start_idx = min((text.find('{') if '{' in text else len(text)), (text.find('[') if '[' in text else len(text)))
+            end_idx = max(text.rfind('}'), text.rfind(']'))
+            if start_idx < end_idx:
+                try:
+                    return json.loads(text[start_idx:end_idx+1])
+                except json.JSONDecodeError:
+                    pass
+            raise
 
 
 def get_llm_client() -> BaseLLMClient:

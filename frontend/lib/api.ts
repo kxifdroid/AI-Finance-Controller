@@ -173,6 +173,7 @@ export async function fetchCashForecast(datasetId?: string): Promise<CashForecas
 
 export async function postFinanceChatMessage(message: string): Promise<{
   answer: string;
+  thought_process: string[];
   tools_used: any[];
   referenced_exceptions: string[];
   referenced_transactions: string[];

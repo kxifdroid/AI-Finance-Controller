@@ -277,7 +277,14 @@ export function MatchDetailModal({ matchId, onClose }: MatchDetailModalProps) {
                   </div>
                   <div className="w-full bg-gray-800 h-1.5 rounded-full mt-1.5 overflow-hidden">
                     <div
-                      className="bg-emerald-500 h-full rounded-full"
+                      className={cn(
+                        "h-full rounded-full",
+                        (detail.features?.amount_similarity ?? 1) >= 0.90
+                          ? "bg-emerald-500"
+                          : (detail.features?.amount_similarity ?? 1) >= 0.50
+                          ? "bg-amber-500"
+                          : "bg-rose-500"
+                      )}
                       style={{ width: `${Math.min(100, (detail.features?.amount_similarity ?? 1) * 100)}%` }}
                     />
                   </div>
@@ -291,7 +298,14 @@ export function MatchDetailModal({ matchId, onClose }: MatchDetailModalProps) {
                   </div>
                   <div className="w-full bg-gray-800 h-1.5 rounded-full mt-1.5 overflow-hidden">
                     <div
-                      className="bg-indigo-500 h-full rounded-full"
+                      className={cn(
+                        "h-full rounded-full",
+                        (detail.features?.reference_similarity ?? 1) >= 0.90
+                          ? "bg-emerald-500"
+                          : (detail.features?.reference_similarity ?? 1) >= 0.50
+                          ? "bg-amber-500"
+                          : "bg-rose-500"
+                      )}
                       style={{ width: `${Math.min(100, (detail.features?.reference_similarity ?? 1) * 100)}%` }}
                     />
                   </div>
@@ -305,7 +319,14 @@ export function MatchDetailModal({ matchId, onClose }: MatchDetailModalProps) {
                   </div>
                   <div className="w-full bg-gray-800 h-1.5 rounded-full mt-1.5 overflow-hidden">
                     <div
-                      className="bg-amber-500 h-full rounded-full"
+                      className={cn(
+                        "h-full rounded-full",
+                        (detail.features?.date_similarity ?? 1) >= 0.90
+                          ? "bg-emerald-500"
+                          : (detail.features?.date_similarity ?? 1) >= 0.50
+                          ? "bg-amber-500"
+                          : "bg-rose-500"
+                      )}
                       style={{ width: `${Math.min(100, (detail.features?.date_similarity ?? 1) * 100)}%` }}
                     />
                   </div>
@@ -319,7 +340,14 @@ export function MatchDetailModal({ matchId, onClose }: MatchDetailModalProps) {
                   </div>
                   <div className="w-full bg-gray-800 h-1.5 rounded-full mt-1.5 overflow-hidden">
                     <div
-                      className="bg-sky-500 h-full rounded-full"
+                      className={cn(
+                        "h-full rounded-full",
+                        (detail.features?.customer_similarity ?? 1) >= 0.90
+                          ? "bg-emerald-500"
+                          : (detail.features?.customer_similarity ?? 1) >= 0.50
+                          ? "bg-amber-500"
+                          : "bg-rose-500"
+                      )}
                       style={{ width: `${Math.min(100, (detail.features?.customer_similarity ?? 1) * 100)}%` }}
                     />
                   </div>

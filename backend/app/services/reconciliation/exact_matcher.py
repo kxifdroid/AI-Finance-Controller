@@ -205,6 +205,7 @@ class ExactMatcher:
                 else:
                     soothing_explanation = f"Matched on reference '{a_ref}' for ₹{max_amt:,.2f} with a {delta_days}-day banking clearing window."
 
+                date_sim = 1.0 if delta_days == 0 else (0.95 if delta_days == 1 else (0.90 if delta_days == 2 else 0.85))
                 match_info = {
                     "side_a": a,
                     "side_b": exact_partner,
@@ -216,6 +217,12 @@ class ExactMatcher:
                     "amount": max_amt,
                     "explanation": soothing_explanation,
                     "evidence_json": evidence_json,
+                    "features": {
+                        "amount_similarity": 1.0,
+                        "date_similarity": date_sim,
+                        "reference_similarity": 1.0,
+                        "customer_similarity": 1.0,
+                    },
                 }
                 matched_pairs.append(match_info)
 

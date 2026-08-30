@@ -30,6 +30,41 @@ from app.agents.llm_provider import get_llm_client, BaseLLMClient
 from app.agents.prompts import FINANCE_QA_SYSTEM_PROMPT
 
 
+PLANNER_SYSTEM_PROMPT = """You are the AI Finance Controller Tool Planner.
+Analyze the user's question and select the exact database tools needed to extract live, mathematically grounded figures from our financial ledger.
+
+AVAILABLE TOOLS:
+1. "get_reconciliation_summary": Get total volume, match rate, exception/duplicate/missing counts.
+2. "get_exceptions": Retrieve list of active exception records. Can pass optional arguments: "severity" ('HIGH', 'MEDIUM', 'LOW'), "limit" (integer).
+3. "get_exception_by_id": Retrieve details of a single exception ID. Arguments: "exception_id" (string, e.g., 'EXC-1001').
+4. "get_high_risk_transactions": Get high-risk match records needing immediate controller review.
+5. "get_unsettled_amount": Aggregate un-reconciled gateway transactions and unsettled bank credit exposure.
+6. "get_largest_discrepancies": Get exceptions with the largest monetary variances. Arguments: "limit" (integer).
+7. "get_specific_transaction": Lookup a specific transaction ID, reference number, or search by customer name (e.g., 'Zeta Media', 'PAY-5006', 'INV-106'). Arguments: "identifier" (string).
+
+RULES:
+- Respond ONLY with valid JSON containing "thought_process" (list of strings describing your planning reasoning) and "tools_to_call" (list of dicts containing "tool_name" and optional "arguments").
+- Do NOT output any Markdown blocks, comments, or conversational text.
+"""
+
+SYNTHESIS_SYSTEM_PROMPT = """You are the AI Finance Controller Senior Forensic Auditor.
+Synthesize a comprehensive, professional, audit-ready natural language response completely grounded in the provided database tool results.
+
+CRITICAL RULES:
+1. ONLY cite or summarize figures, transaction IDs, status labels, and dates that are present in the provided context.
+2. If the tools found no matching records, explain that honestly rather than inventing or guessing details.
+3. Formatting: Highlight monetary values with currency symbols and comma separators (e.g. ₹15,000.00). Use backticks for IDs (`PAY-5006`).
+4. Output Format: Return a strict JSON response conforming to the following structure:
+{
+  "thought_process": ["Thinking step 1", "Thinking step 2", "Synthesizing answer"],
+  "answer": "Professional Markdown formatted answer...",
+  "referenced_exceptions": ["EXC-ID", ...],
+  "referenced_transactions": ["MATCH-ID", ...]
+}
+Do NOT wrap your JSON in conversational text or comments.
+"""
+
+
 class FinanceQAAgent:
     """
     Q&A agent with verified tool calling against the reconciliation database.
@@ -174,108 +209,200 @@ class FinanceQAAgent:
             for r in records
         ]
 
+    @staticmethod
+    def tool_get_specific_transaction(db: Session, identifier: str) -> Dict[str, Any]:
+        """Tool: Search database for a specific transaction ID, invoice reference, or counterparty name."""
+        ident_clean = identifier.strip()
+        
+        # 1. Search in Match records (using Match ID)
+        match_rec = db.query(Match).filter(Match.match_id == ident_clean).first()
+        if match_rec:
+            return {
+                "source": "match_records",
+                "match_id": match_rec.match_id,
+                "decision": match_rec.decision,
+                "risk_level": match_rec.risk_level,
+                "confidence_score": match_rec.confidence_score,
+                "bank_txn_id": match_rec.bank_txn_id,
+                "gateway_txn_id": match_rec.gateway_txn_id,
+                "invoice_id": match_rec.invoice_id,
+                "explanation": match_rec.explanation,
+                "recommended_action": match_rec.recommended_action,
+            }
+            
+        # 2. Search in Exceptions
+        exc_rec = db.query(ExceptionRecord).filter(
+            (ExceptionRecord.exception_id == ident_clean) |
+            (ExceptionRecord.bank_txn_id == ident_clean) |
+            (ExceptionRecord.gateway_txn_id == ident_clean) |
+            (ExceptionRecord.invoice_id == ident_clean)
+        ).first()
+        if exc_rec:
+            return {
+                "source": "exception_records",
+                "exception_id": exc_rec.exception_id,
+                "type": exc_rec.exception_type,
+                "severity": exc_rec.severity,
+                "status": exc_rec.status,
+                "amount_involved": exc_rec.amount_involved,
+                "amount_discrepancy": exc_rec.amount_discrepancy,
+                "explanation": exc_rec.explanation,
+                "recommended_action": exc_rec.recommended_action,
+            }
+
+        # 3. Search Invoice (by ID, reference, or customer name)
+        inv = db.query(Invoice).filter(
+            (Invoice.invoice_id == ident_clean) |
+            (Invoice.invoice_reference == ident_clean) |
+            (Invoice.customer_name.ilike(f"%{ident_clean}%"))
+        ).first()
+        if inv:
+            return {
+                "source": "erp_invoices",
+                "invoice_id": inv.invoice_id,
+                "invoice_reference": inv.invoice_reference,
+                "customer_name": inv.customer_name,
+                "amount": inv.amount,
+                "invoice_date": str(inv.invoice_date),
+                "status": "Found in ERP",
+            }
+
+        # 4. Search Gateway (by ID, reference, or customer name)
+        gw = db.query(GatewayTransaction).filter(
+            (GatewayTransaction.gateway_txn_id == ident_clean) |
+            (GatewayTransaction.payment_reference == ident_clean) |
+            (GatewayTransaction.customer_name.ilike(f"%{ident_clean}%"))
+        ).first()
+        if gw:
+            return {
+                "source": "payment_gateway",
+                "gateway_txn_id": gw.gateway_txn_id,
+                "payment_reference": gw.payment_reference,
+                "customer_name": gw.customer_name,
+                "amount": gw.amount,
+                "net_settlement": gw.net_settlement,
+                "transaction_date": str(gw.transaction_date),
+                "status": "Found in Gateway",
+            }
+
+        # 5. Search Bank
+        bank = db.query(BankTransaction).filter(
+            (BankTransaction.bank_txn_id == ident_clean) |
+            (BankTransaction.reference == ident_clean) |
+            (BankTransaction.description.ilike(f"%{ident_clean}%"))
+        ).first()
+        if bank:
+            return {
+                "source": "bank_statement",
+                "bank_txn_id": bank.bank_txn_id,
+                "reference": bank.reference,
+                "description": bank.description,
+                "amount": bank.amount,
+                "transaction_date": str(bank.transaction_date),
+                "status": "Found in Bank Statements",
+            }
+
+        return {"status": "not_found", "message": f"No records matching identifier '{ident_clean}' found."}
+
     async def answer_query(self, db: Session, user_message: str) -> Dict[str, Any]:
         """
         Processes a user question by selecting and executing relevant database tools,
-        then formulating an accurate, grounded answer.
+        then formulating an accurate, grounded answer using a two-stage Gemini agent.
         """
-        msg_lower = user_message.lower()
-        tools_used = []
-        referenced_exceptions = []
-        referenced_transactions = []
-        context_data = {}
+        thought_process: List[str] = []
+        tools_used_log: List[Dict[str, Any]] = []
+        referenced_exceptions: List[str] = []
+        referenced_transactions: List[str] = []
+        context_data: Dict[str, Any] = {}
 
-        # 1. Deterministic Intent & Tool Routing
-        if any(w in msg_lower for w in ["summary", "overview", "match rate", "how many", "status", "reconciled", "progress"]):
-            summary = self.tool_get_reconciliation_summary(db)
-            tools_used.append({"tool_name": "get_reconciliation_summary", "arguments": {}, "result_summary": f"Fetched summary for {summary.get('total_records', 0)} records."})
-            context_data["reconciliation_summary"] = summary
+        # Stage 1: Gemini plans which tools to call
+        planning_prompt_user = f"User Query: {user_message}\\n\\n"
+        try:
+            planner_response = await self.llm_client.generate_structured_json(PLANNER_SYSTEM_PROMPT, planning_prompt_user)
+            thought_process.extend(planner_response.get("thought_process", []))
+            tools_to_call = planner_response.get("tools_to_call", [])
+        except Exception as e:
+            thought_process.append(f"Error in tool planning: {e}. Attempting basic keyword routing as fallback.")
+            tools_to_call = [] # Fallback to empty list, then handle keyword routing below
 
-        if any(w in msg_lower for w in ["largest", "biggest", "highest amount", "top discrepancy", "discrepancy"]):
-            largest = self.tool_get_largest_discrepancies(db, limit=5)
-            tools_used.append({"tool_name": "get_largest_discrepancies", "arguments": {"limit": 5}, "result_summary": f"Found {len(largest)} largest discrepancy records."})
-            context_data["largest_discrepancies"] = largest
-            for item in largest:
-                referenced_exceptions.append(item["exception_id"])
+        # Fallback to existing deterministic keyword routing if LLM planning fails or returns no tools
+        if not tools_to_call:
+            if any(w in user_message.lower() for w in ["summary", "overview", "match rate", "how many", "status", "reconciled", "progress"]):
+                tools_to_call.append({"tool_name": "get_reconciliation_summary", "arguments": {}})
+            if any(w in user_message.lower() for w in ["largest", "biggest", "highest amount", "top discrepancy", "discrepancy"]):
+                tools_to_call.append({"tool_name": "get_largest_discrepancies", "arguments": {"limit": 5}})
+            if any(w in user_message.lower() for w in ["unsettled", "cash", "pending", "exposure", "disputed"]):
+                tools_to_call.append({"tool_name": "get_unsettled_amount", "arguments": {}})
+            if any(w in user_message.lower() for w in ["high risk", "urgent", "attention", "critical", "failed"]):
+                tools_to_call.append({"tool_name": "get_high_risk_transactions", "arguments": {}})
+            if any(w in user_message.lower() for w in ["exception", "unresolved", "error", "missing", "duplicate"]):
+                tools_to_call.append({"tool_name": "get_exceptions", "arguments": {"limit": 10}})
+            if any(w in user_message.lower() for w in ["zeta media", "pay-", "inv-", "transaction", "id", "reference"]):
+                # Attempt to extract identifier for specific transaction lookup
+                import re
+                match = re.search(r'(PAY-\d+|INV-\d+|EXC-\d+|[A-Za-z ]+)', user_message)
+                if match:
+                    identifier = match.group(1).strip()
+                    tools_to_call.append({"tool_name": "get_specific_transaction", "arguments": {"identifier": identifier}})
+                else:
+                    tools_to_call.append({"tool_name": "get_reconciliation_summary", "arguments": {}}) # Default fallback
 
-        if any(w in msg_lower for w in ["unsettled", "cash", "pending", "exposure", "disputed"]):
-            unsettled = self.tool_get_unsettled_amount(db)
-            tools_used.append({"tool_name": "get_unsettled_amount", "arguments": {}, "result_summary": f"Total unsettled open amount: ₹{unsettled.get('total_open_exception_amount', 0):,.2f}"})
-            context_data["unsettled_metrics"] = unsettled
+            # If still no tools, default to summary
+            if not tools_to_call:
+                tools_to_call.append({"tool_name": "get_reconciliation_summary", "arguments": {}})
 
-        if any(w in msg_lower for w in ["high risk", "urgent", "attention", "critical", "failed"]):
-            high_risk = self.tool_get_high_risk_transactions(db)
-            tools_used.append({"tool_name": "get_high_risk_transactions", "arguments": {}, "result_summary": f"Found {len(high_risk)} high risk transactions."})
-            context_data["high_risk_transactions"] = high_risk
-            for item in high_risk:
-                referenced_transactions.append(item["match_id"])
+        # Stage 2: Execute planned tools
+        for tool_call in tools_to_call:
+            tool_name = tool_call["tool_name"]
+            arguments = tool_call.get("arguments", {})
+            tool_method = getattr(self, f"tool_{tool_name}", None)
 
-        if any(w in msg_lower for w in ["exception", "unresolved", "error", "missing", "duplicate"]):
-            exceptions = self.tool_get_exceptions(db, limit=10)
-            tools_used.append({"tool_name": "get_exceptions", "arguments": {"limit": 10}, "result_summary": f"Retrieved {len(exceptions)} open exception records."})
-            context_data["exceptions_sample"] = exceptions
-            for item in exceptions:
-                referenced_exceptions.append(item["exception_id"])
+            if tool_method:
+                try:
+                    # Pass db session and other required arguments
+                    result = tool_method(db=db, **arguments)
+                    context_data[tool_name] = result
+                    tools_used_log.append({
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                        "result_summary": f"Executed {tool_name} with args {arguments}. Found {len(result)} items." if isinstance(result, list) else f"Executed {tool_name}. Status: {result.get('status', 'OK')}"
+                    })
 
-        # If no specific keyword triggered tools, load general summary & exceptions
-        if not tools_used:
-            summary = self.tool_get_reconciliation_summary(db)
-            tools_used.append({"tool_name": "get_reconciliation_summary", "arguments": {}, "result_summary": "Default reconciliation overview."})
-            context_data["reconciliation_summary"] = summary
+                    # Extract referenced IDs for frontend display
+                    if tool_name == "get_exceptions":
+                        for item in result: referenced_exceptions.append(item["exception_id"])
+                    elif tool_name == "get_largest_discrepancies":
+                        for item in result: referenced_exceptions.append(item["exception_id"])
+                    elif tool_name == "get_high_risk_transactions":
+                        for item in result: referenced_transactions.append(item["match_id"])
+                    elif tool_name == "get_specific_transaction":
+                        if result.get("source") == "match_records": referenced_transactions.append(result["match_id"])
+                        if result.get("source") == "exception_records": referenced_exceptions.append(result["exception_id"])
 
-        # 2. Synthesize Grounded Natural Language Response
-        # We synthesize an audit-ready response grounded completely in context_data
-        parts = []
-
-        if "reconciliation_summary" in context_data:
-            s = context_data["reconciliation_summary"]
-            if s.get("status") == "no_runs_found":
-                parts.append("No reconciliation run has been executed yet. Please click 'Run Reconciliation' to process transactions.")
+                except Exception as e:
+                    thought_process.append(f"Error executing tool {tool_name}: {e}")
+                    tools_used_log.append({"tool_name": tool_name, "arguments": arguments, "result_summary": f"Failed with error: {e}"})
             else:
-                parts.append(
-                    f"**Reconciliation Summary (Run {s['run_id']})**:\n"
-                    f"- Total Records Processed: **{s['total_records']}**\n"
-                    f"- Matched: **{s['matched_count']}** ({s['match_rate_pct']}% match rate, ₹{s['total_matched_volume']:,.2f})\n"
-                    f"- Human Review Needed: **{s['review_count']}** (₹{s['total_review_volume']:,.2f})\n"
-                    f"- Exceptions: **{s['exception_count']}** (₹{s['total_exception_volume']:,.2f})\n"
-                    f"- Duplicates: **{s['duplicate_count']}** | Missing Records: **{s['missing_count']}**\n"
-                    f"- Pipeline Throughput: **{s['throughput_rps']} records/sec** ({s['processing_time_ms']:.0f} ms)"
-                )
+                thought_process.append(f"Warning: Tool '{tool_name}' not found or not callable.")
+                tools_used_log.append({"tool_name": tool_name, "arguments": arguments, "result_summary": "Tool not found"})
 
-        if "largest_discrepancies" in context_data:
-            largest = context_data["largest_discrepancies"]
-            if largest:
-                top = largest[0]
-                parts.append(
-                    f"\n**Largest Discrepancy Identified**:\n"
-                    f"- Exception ID: `{top['exception_id']}`\n"
-                    f"- Discrepancy Amount: **₹{top['amount_discrepancy']:,.2f}** (Total involved: ₹{top['amount_involved']:,.2f})\n"
-                    f"- Classification: **{top['type']}** (Severity: `{top['severity']}`)\n"
-                    f"- Cause: {top['explanation']}\n"
-                    f"- Recommended Action: {top['recommended_action']}"
-                )
-
-        if "unsettled_metrics" in context_data:
-            u = context_data["unsettled_metrics"]
-            parts.append(
-                f"\n**Unsettled Cash Position**:\n"
-                f"- Total Open Exception Exposure: **₹{u['total_open_exception_amount']:,.2f}**\n"
-                f"- Net Discrepancy Variance: **₹{u['total_unsettled_discrepancies']:,.2f}**\n"
-                f"- Un-reconciled Gateway Volume: **₹{u['missing_gateway_volume']:,.2f}**"
-            )
-
-        if "high_risk_transactions" in context_data:
-            hr = context_data["high_risk_transactions"]
-            if hr:
-                parts.append(f"\n**Transactions Requiring Immediate Attention ({len(hr)} High Risk items)**:")
-                for item in hr[:3]:
-                    parts.append(f"- Match `{item['match_id']}`: {item['explanation']} -> *{item['recommended_action']}*")
-
-        answer_text = "\n\n".join(parts)
+        # Stage 3: Gemini synthesizes the final answer
+        synthesis_prompt_user = f"User Query: {user_message}\\n\\nTool Execution Results:\\n{json.dumps(context_data, indent=2)}\\n\\nProvide a comprehensive summary based on these results."
+        
+        try:
+            synthesis_response = await self.llm_client.generate_structured_json(SYNTHESIS_SYSTEM_PROMPT, synthesis_prompt_user)
+            final_answer = synthesis_response.get("answer", "I couldn't generate a specific answer based on the provided data.")
+            thought_process.extend(synthesis_response.get("thought_process", []))
+            referenced_exceptions.extend(synthesis_response.get("referenced_exceptions", []))
+            referenced_transactions.extend(synthesis_response.get("referenced_transactions", []))
+        except Exception as e:
+            thought_process.append(f"Error in answer synthesis: {e}")
+            final_answer = "I encountered an error while trying to generate a response. Please try again."
 
         return {
-            "answer": answer_text,
-            "tools_used": tools_used,
+            "answer": final_answer,
+            "thought_process": thought_process,
+            "tools_used": tools_used_log,
             "referenced_exceptions": list(set(referenced_exceptions)),
             "referenced_transactions": list(set(referenced_transactions)),
         }

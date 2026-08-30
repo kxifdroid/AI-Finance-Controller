@@ -220,6 +220,8 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  isThinking?: boolean; // Optional: true when the AI is actively processing, false/undefined otherwise
+  thought_process?: string[]; // Optional: array of strings for step-by-step reasoning
   tools_used?: ToolCall[];
   timestamp: string;
 }

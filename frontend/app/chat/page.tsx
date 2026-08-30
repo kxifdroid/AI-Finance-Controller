@@ -10,11 +10,14 @@ import {
   HelpCircle, 
   AlertCircle, 
   ShieldCheck,
-  RotateCcw
+  RotateCcw,
+  Brain
 } from "lucide-react";
 import { ChatMessage, ToolCall } from "@/types";
 import { postFinanceChatMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import Markdown from "react-markdown";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/accordion";
 
 const SAMPLE_QUESTIONS = [
   "How many transactions are unresolved?",
@@ -55,7 +58,19 @@ export default function ChatPage() {
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    const thinkingId = `thinking_${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      userMsg,
+      {
+        id: thinkingId,
+        role: "assistant",
+        content: "",
+        isThinking: true,
+        thought_process: ["Analyzing your query…", "Selecting the right ledger tools…"],
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      },
+    ]);
     setInput("");
     setLoading(true);
 
@@ -65,18 +80,29 @@ export default function ChatPage() {
         id: `a_${Date.now()}`,
         role: "assistant",
         content: res.answer,
+        isThinking: false,
+        thought_process: res.thought_process,
         tools_used: res.tools_used,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
-      setMessages((prev) => [...prev, assistantMsg]);
+      setMessages((prev) =>
+        prev
+          .filter((m) => m.id !== thinkingId)
+          .concat(assistantMsg)
+      );
     } catch (err: any) {
       const errorMsg: ChatMessage = {
         id: `err_${Date.now()}`,
         role: "assistant",
         content: `Error querying finance ledger: ${err.message || "Failed to fetch data."}`,
+        isThinking: false,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) =>
+        prev
+          .filter((m) => m.id !== thinkingId)
+          .concat(errorMsg)
+      );
     } finally {
       setLoading(false);
     }
@@ -149,16 +175,57 @@ export default function ChatPage() {
               )}
 
               <div className="space-y-2">
-                <div
-                  className={cn(
-                    "rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-sm",
-                    isUser
-                      ? "bg-primary text-white rounded-br-none"
-                      : "bg-background/80 border border-border text-gray-200 rounded-bl-none"
-                  )}
-                >
-                  <div className="whitespace-pre-wrap">{msg.content}</div>
-                </div>
+                {!isUser && msg.isThinking && (
+                  <div className="flex items-center gap-2 rounded-2xl rounded-bl-none bg-background/80 border border-border px-4 py-3 text-xs text-gray-400">
+                    <div className="relative flex h-5 w-5 items-center justify-center">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-30" />
+                      <Brain className="relative h-4 w-4 text-indigo-300 animate-pulse" />
+                    </div>
+                    <span>AI Agent analyzing financial ledger state with Gemini…</span>
+                  </div>
+                )}
+
+                {!isUser && !msg.isThinking && msg.thought_process && msg.thought_process.length > 0 && (
+                  <Accordion type="single" collapsible className="w-full max-w-2xl">
+                    <AccordionItem value={`thought-${msg.id}`} className="border border-border rounded-lg bg-background/60 overflow-hidden">
+                      <AccordionTrigger className="px-3 py-2 text-[11px] font-semibold text-indigo-300 hover:no-underline">
+                        <span className="flex items-center gap-1.5">
+                          <Brain className="h-3.5 w-3.5" />
+                          Thought Process &amp; Data Trace ({msg.tools_used?.length ?? 0} tools used)
+                        </span>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-3 pb-3 pt-1">
+                        <ol className="space-y-1.5">
+                          {msg.thought_process.map((step, idx) => (
+                            <li key={idx} className="flex gap-2 text-[11px] text-gray-400 leading-relaxed">
+                              <span className="font-mono text-indigo-400 shrink-0">{idx + 1}.</span>
+                              <span>{step}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
+                )}
+
+                {!msg.isThinking && (
+                  <div
+                    className={cn(
+                      "rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-sm",
+                      isUser
+                        ? "bg-primary text-white rounded-br-none"
+                        : "bg-background/80 border border-border text-gray-200 rounded-bl-none"
+                    )}
+                  >
+                    {isUser ? (
+                      <div className="whitespace-pre-wrap">{msg.content}</div>
+                    ) : (
+                      <div className="prose prose-invert prose-xs max-w-none [&_code]:bg-indigo-950/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-indigo-200 [&_code]:font-mono">
+                        <Markdown>{msg.content}</Markdown>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Tool Invocation Badges */}
                 {msg.tools_used && msg.tools_used.length > 0 && (
@@ -196,7 +263,7 @@ export default function ChatPage() {
             </div>
             <div className="rounded-2xl rounded-bl-none bg-background/80 border border-border p-3 text-xs text-gray-400 flex items-center gap-2">
               <div className="h-3 w-3 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
-              <span>Querying reconciliation database and formulating answer...</span>
+              <span>Executing ledger tools and synthesizing answer…</span>
             </div>
           </div>
         )}

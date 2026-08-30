@@ -616,15 +616,26 @@ class ReconciliationEngine:
                 "reference_similarity": 1.0,
                 "customer_similarity": 1.0,
             }
-            m2_features = (m2.get("features") if m2 else None) or {
-                "amount_similarity": 1.0 if (m2 and m2.get("match_type") == "EXACT") else 1.0,
-                "date_similarity": 1.0,
-                "reference_similarity": 1.0,
-                "customer_similarity": 1.0,
-            }
+            if m2:
+                m2_features = m2.get("features") or {
+                    "amount_similarity": 1.0 if m2.get("match_type") == "EXACT" else 1.0,
+                    "date_similarity": 1.0,
+                    "reference_similarity": 1.0,
+                    "customer_similarity": 1.0,
+                }
+            else:
+                # Missing Leg 2 (no bank settlement): penalize the 3-way score.
+                # Amount cleared is ₹0 vs expected -> amount similarity 0.0;
+                # settlement date is pending -> date similarity 0.50.
+                m2_features = {
+                    "amount_similarity": 0.0,
+                    "date_similarity": 0.50,
+                    "reference_similarity": 1.0,
+                    "customer_similarity": 1.0,
+                }
 
-            match_amt_sim = round(min(float(m1_features.get("amount_similarity", 1.0)), float(m2_features.get("amount_similarity", 1.0))), 4)
-            match_date_sim = round(min(float(m1_features.get("date_similarity", 1.0)), float(m2_features.get("date_similarity", 1.0))), 4)
+            match_amt_sim = round(min(float(m1_features.get("amount_similarity", 1.0)), float(m2_features.get("amount_similarity", 0.0))), 4)
+            match_date_sim = round(min(float(m1_features.get("date_similarity", 1.0)), float(m2_features.get("date_similarity", 0.50))), 4)
             match_ref_sim = round(min(float(m1_features.get("reference_similarity", 1.0)), float(m2_features.get("reference_similarity", 1.0))), 4)
             match_cust_sim = round(min(float(m1_features.get("customer_similarity", 1.0)), float(m2_features.get("customer_similarity", 1.0))), 4)
 
@@ -749,25 +760,33 @@ class ReconciliationEngine:
             )
 
         # 2. Gateway records unmatched to Bank -> MISSING_BANK_SETTLEMENT / MISSING_ERP_TRANSACTION
+        gw_to_inv_map = {
+            getattr(m["side_b"], "gateway_txn_id"): m["side_a"]
+            for m in leg1_res["matched_pairs"] + leg1_res["review_pairs"]
+            if getattr(m.get("side_b"), "gateway_txn_id", None)
+        }
+
         unmatched_gateways = [
             g for g in gateway_records
             if getattr(g, "gateway_txn_id") not in leg2_res["matched_a_ids"]
         ]
         for gw in unmatched_gateways:
+            gw_id = getattr(gw, "gateway_txn_id")
             gw_amt = float(getattr(gw, "amount", 0.0))
-            is_invoiced = getattr(gw, "gateway_txn_id") in leg1_res["matched_b_ids"]
+            matched_inv = gw_to_inv_map.get(gw_id)
+            is_invoiced = matched_inv is not None
             exc_type = "MISSING_BANK_SETTLEMENT" if is_invoiced else "MISSING_ERP_TRANSACTION"
             reason = (
-                f"Gateway Transaction {getattr(gw, 'gateway_txn_id')} captured but bank settlement deposit not found."
+                f"Gateway Transaction {gw_id} captured (Invoice {getattr(matched_inv, 'invoice_id', '')} linked) but bank settlement deposit not found."
                 if is_invoiced
-                else f"Gateway Transaction {getattr(gw, 'gateway_txn_id')} has no corresponding ERP invoice or bank settlement."
+                else f"Gateway Transaction {gw_id} has no corresponding ERP invoice or bank settlement."
             )
             exc = ExceptionService.classify_and_create_exception(
                 db=db,
                 run_id=run_id,
                 bank_record=None,
                 gateway_record=gw,
-                invoice_record=None,
+                invoice_record=matched_inv,
                 decision="EXCEPTION",
                 reason=reason,
                 recommended_action="Verify gateway payout schedule and settlement bank account." if is_invoiced else "Create ERP accrual invoice.",

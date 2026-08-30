@@ -24,6 +24,7 @@ class ToolCallRecord(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
+    thought_process: List[str] = Field(default_factory=list)
     tools_used: List[ToolCallRecord] = Field(default_factory=list)
     referenced_exceptions: List[str] = Field(default_factory=list)
     referenced_transactions: List[str] = Field(default_factory=list)
