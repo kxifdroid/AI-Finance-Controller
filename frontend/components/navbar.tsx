@@ -138,7 +138,11 @@ export function Navbar() {
                 {/* Avatar */}
                 <div className="h-7 w-7 rounded-full overflow-hidden flex items-center justify-center bg-primary/20 border border-primary/40 text-primary-light font-bold text-xs shrink-0">
                   {user.avatar_url ? (
-                    <img src={user.avatar_url} alt={user.name} className="h-full w-full object-cover" />
+                    <img
+                      src={user.avatar_url.startsWith("http") ? user.avatar_url : `${process.env.NEXT_PUBLIC_API_URL || ""}${user.avatar_url}`}
+                      alt={user.name}
+                      className="h-full w-full object-cover"
+                    />
                   ) : (
                     getInitials(user.name)
                   )}
@@ -166,7 +170,11 @@ export function Navbar() {
                     <div className="flex items-center gap-3">
                       <div className="h-10 w-10 rounded-full overflow-hidden flex items-center justify-center bg-primary/20 border border-primary/40 text-primary-light font-bold text-sm shrink-0">
                         {user.avatar_url ? (
-                          <img src={user.avatar_url} alt={user.name} className="h-full w-full object-cover" />
+                          <img
+                            src={user.avatar_url.startsWith("http") ? user.avatar_url : `${process.env.NEXT_PUBLIC_API_URL || ""}${user.avatar_url}`}
+                            alt={user.name}
+                            className="h-full w-full object-cover"
+                          />
                         ) : (
                           getInitials(user.name)
                         )}

@@ -73,7 +73,11 @@ export function ProfileModal({ onClose }: ProfileModalProps) {
                   <Loader2 className="h-5 w-5 animate-spin text-primary" />
                 </div>
               ) : user.avatar_url ? (
-                <img src={user.avatar_url} alt={user.name} className="h-full w-full object-cover" />
+                <img
+                  src={user.avatar_url.startsWith("http") ? user.avatar_url : `${process.env.NEXT_PUBLIC_API_URL || ""}${user.avatar_url}`}
+                  alt={user.name}
+                  className="h-full w-full object-cover"
+                />
               ) : (
                 <div className="h-full w-full flex items-center justify-center text-lg font-bold text-gray-400">
                   {user.name.charAt(0).toUpperCase()}
