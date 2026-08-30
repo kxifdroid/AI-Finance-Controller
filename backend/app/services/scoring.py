@@ -52,11 +52,11 @@ class ScoringService:
         self.w_customer = weight_customer / total_w
         self.date_max_tolerance_days = max(1, date_max_tolerance_days)
 
-    def calculate_amount_similarity(self, amount1: float, amount2: float) -> float:
+    def calculate_amount_similarity(self, amount1: float, amount2: float, allow_fee_variance: bool = False) -> float:
         """
         Calculates similarity between two monetary amounts.
-        Exact match = 1.0. Small fee differences (e.g. 2-3% MDR) decay smoothly.
-        Large discrepancies drop towards 0.0.
+        Exact match (diff < 0.01) = 1.0.
+        Any variance decays exponentially based on relative difference unless explicit fee variance is allowed.
         """
         if amount1 is None or amount2 is None:
             return 0.0
@@ -71,13 +71,51 @@ class ScoringService:
         max_val = max(abs(a1), abs(a2), 1.0)
         pct_diff = diff / max_val
         
-        # If relative difference is within fee variance window, assign full confidence
-        if pct_diff <= settings.FEE_VARIANCE_MAX_PCT:
+        # Only allow 1.0 if explicit fee variance check is enabled
+        if allow_fee_variance and pct_diff <= settings.FEE_VARIANCE_MAX_PCT:
             return 1.0
         
-        # Beyond fee variance, exponential decay based on config
+        # Exponential decay: e^(-10.0 * pct_diff)
+        # e.g., 5% diff -> e^(-0.5) = 0.6065; 10% diff -> e^(-1.0) = 0.3679
         score = math.exp(-settings.SCORING_AMOUNT_DECAY_RATE * pct_diff)
         return round(max(0.0, score), 4)
+
+    def calculate_3way_amount_similarity(
+        self,
+        invoice_amount: Optional[float],
+        gateway_gross: Optional[float],
+        gateway_fee: Optional[float],
+        gateway_tax: Optional[float],
+        bank_credit: Optional[float],
+    ) -> float:
+        """
+        Evaluates amount similarity across the entire 3-way lifecycle:
+        Leg 1: Invoice Amount vs Gateway Gross
+        Leg 2: Expected Net Settlement (Gross - Fee - Tax) vs Bank Credit
+        Returns minimum similarity across both legs.
+        """
+        inv_amt = float(invoice_amount) if invoice_amount is not None else None
+        gw_amt = float(gateway_gross) if gateway_gross is not None else None
+        fee = float(gateway_fee or 0.0)
+        tax = float(gateway_tax or 0.0)
+        bank_amt = float(bank_credit) if bank_credit is not None else None
+
+        # Leg 1: Invoice vs Gateway Gross
+        if inv_amt is not None and gw_amt is not None:
+            sim1 = self.calculate_amount_similarity(inv_amt, gw_amt)
+        else:
+            sim1 = 1.0 if (inv_amt is None and gw_amt is None) else 0.0
+
+        # Leg 2: Gateway Net vs Bank Credit
+        if gw_amt is not None and bank_amt is not None:
+            expected_net = gw_amt - fee - tax if fee > 0 else gw_amt
+            sim2 = self.calculate_amount_similarity(expected_net, bank_amt)
+        elif inv_amt is not None and bank_amt is not None:
+            sim2 = self.calculate_amount_similarity(inv_amt, bank_amt)
+        else:
+            sim2 = 1.0 if (gw_amt is None and bank_amt is None) else 0.0
+
+        return round(min(sim1, sim2), 4)
 
     def calculate_date_similarity(self, date1: date, date2: date) -> float:
         """

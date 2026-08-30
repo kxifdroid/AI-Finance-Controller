@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { 
   TrendingUp, 
@@ -9,24 +10,60 @@ import {
   ShieldCheck, 
   Info, 
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  RotateCcw
 } from "lucide-react";
 import { CashForecastData } from "@/types";
-import { fetchCashForecast } from "@/lib/api";
+import { fetchCashForecast, fetchMetrics, resetReconciliation } from "@/lib/api";
 import { CashForecastChart } from "@/components/charts/cash-forecast-chart";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 
 export default function ForecastPage() {
   const [forecast, setForecast] = useState<CashForecastData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [isResetting, setIsResetting] = useState<boolean>(false);
+
+  const loadForecast = async () => {
+    setLoading(true);
+    try {
+      const datasetId = typeof window !== "undefined" ? localStorage.getItem("latest_dataset_id") || undefined : undefined;
+      // Gate the forecast on whether a reconciliation run actually exists.
+      // Without this, the backend returns a fabricated baseline projection even
+      // when no data has been reconciled, making the page "show something on its own".
+      const metrics = await fetchMetrics(datasetId);
+      if (!metrics.has_run) {
+        setForecast(null);
+        return;
+      }
+      const data = await fetchCashForecast(datasetId);
+      setForecast(data);
+    } catch (err) {
+      console.error(err);
+      setForecast(null);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const datasetId = typeof window !== "undefined" ? localStorage.getItem("latest_dataset_id") || undefined : undefined;
-    fetchCashForecast(datasetId)
-      .then((data) => setForecast(data))
-      .catch((err) => console.error(err))
-      .finally(() => setLoading(false));
+    loadForecast();
   }, []);
+
+  const handleReset = async () => {
+    if (!window.confirm("Reset and clear all reconciliation data? This will clear the cash forecast until you upload and reconcile new data.")) return;
+    setIsResetting(true);
+    try {
+      await resetReconciliation(undefined, true);
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("latest_dataset_id");
+      }
+      await loadForecast();
+    } catch (err: any) {
+      alert(`Failed to reset: ${err.message}`);
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -46,9 +83,38 @@ export default function ForecastPage() {
           <span className="text-xs bg-primary/20 text-primary-light px-3 py-1 rounded-full border border-primary/30 font-medium">
             Rule-Based Deterministic Model
           </span>
+          <button
+            onClick={handleReset}
+            disabled={loading || isResetting}
+            aria-label="Reset forecast and clear all reconciliation data"
+            className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 disabled:opacity-50"
+          >
+            <RotateCcw className={cn("h-3.5 w-3.5", isResetting && "animate-spin")} />
+            {isResetting ? "Resetting..." : "Reset"}
+          </button>
         </div>
       </div>
 
+      {/* Empty state — no reconciliation run exists (e.g. after a reset) */}
+      {!loading && !forecast ? (
+        <div className="rounded-2xl border border-border bg-card p-12 flex flex-col items-center justify-center text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-800/60 border border-border mb-4">
+            <TrendingUp className="h-6 w-6 text-gray-500" />
+          </div>
+          <h3 className="text-base font-semibold text-white">No forecast available</h3>
+          <p className="mt-1.5 max-w-sm text-xs text-gray-400">
+            Run a reconciliation to generate the cash forecast. The projection is derived
+            from reconciled cleared cash, pending gateway settlements, and open receivables.
+          </p>
+          <Link
+            href="/"
+            className="mt-5 inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-4 py-2 text-xs font-semibold text-primary-light transition-colors hover:bg-primary/20"
+          >
+            Go to Dashboard
+          </Link>
+        </div>
+      ) : (
+      <>
       {/* Methodology & Limitations Disclosure Banner */}
       <div className="rounded-xl border border-indigo-500/30 bg-indigo-950/20 p-4 flex items-start gap-3">
         <Info className="h-5 w-5 text-indigo-400 shrink-0 mt-0.5" />
@@ -153,6 +219,8 @@ export default function ForecastPage() {
           </table>
         </div>
       </div>
+      </>
+      )}
 
     </div>
   );

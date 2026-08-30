@@ -2,8 +2,24 @@
 
 import { useState } from "react";
 import { uploadFile, confirmMapping } from "@/lib/api";
-import { Upload, FileText, CheckCircle, AlertTriangle, ChevronRight, X, Plus, RotateCcw } from "lucide-react";
+import { 
+  Upload, 
+  FileText, 
+  CheckCircle2, 
+  AlertTriangle, 
+  ChevronRight, 
+  X, 
+  Plus, 
+  RotateCcw,
+  Building2,
+  CreditCard,
+  Layers,
+  ArrowRight,
+  Sparkles,
+  ShieldCheck
+} from "lucide-react";
 import Link from "next/link";
+import { cn } from "@/lib/utils";
 
 type UploadedFileState = {
   id: string;
@@ -15,11 +31,32 @@ type UploadedFileState = {
   errorMsg: string;
 };
 
+const STEPPER_STEPS = [
+  { id: 1, name: "Upload" },
+  { id: 2, name: "Detect" },
+  { id: 3, name: "Map Schema" },
+  { id: 4, name: "Validate" },
+  { id: 5, name: "Ingest" },
+  { id: 6, name: "Ready" },
+];
+
 export default function UploadPage() {
   const [files, setFiles] = useState<UploadedFileState[]>([]);
   const [globalStatus, setGlobalStatus] = useState<"idle" | "mapping" | "confirming" | "success">("idle");
   const [globalError, setGlobalError] = useState("");
   const [datasetName, setDatasetName] = useState("");
+  const [ingestionResult, setIngestionResult] = useState<any>(null);
+
+  // Compute active stepper step
+  const getActiveStep = () => {
+    if (globalStatus === "success") return 6;
+    if (globalStatus === "confirming") return 5;
+    if (files.some(f => f.status === "uploading")) return 2;
+    if (files.some(f => f.status === "mapped")) return 3;
+    return 1;
+  };
+
+  const currentStep = getActiveStep();
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -36,13 +73,11 @@ export default function UploadPage() {
       setFiles((prev) => [...prev, ...newFiles]);
       
       if (!datasetName && newFiles.length > 0) {
-        // Auto-set dataset name based on the first file or current date
-        setDatasetName(`Batch Upload ${new Date().toLocaleDateString()}`);
+        setDatasetName(`Batch Ingestion ${new Date().toLocaleDateString()}`);
       }
 
       setGlobalStatus("mapping");
       
-      // Upload them sequentially or parallel to get mappings
       for (const nf of newFiles) {
         updateFileState(nf.id, { status: "uploading" });
         try {
@@ -73,8 +108,6 @@ export default function UploadPage() {
       setGlobalStatus("idle");
     }
   };
-
-  const [ingestionResult, setIngestionResult] = useState<any>(null);
 
   const handleConfirm = async () => {
     setGlobalStatus("confirming");
@@ -166,93 +199,192 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-white mb-2">Upload Center</h1>
-        <p className="text-gray-400">Upload your financial files for automatic schema detection and ingestion.</p>
-      </div>
+    <div className="max-w-6xl mx-auto space-y-6">
       
+      {/* Header */}
+      <div className="border-b border-border pb-5">
+        <div className="flex items-center gap-2.5">
+          <h1 className="text-2xl sm:text-[26px] font-bold tracking-tight text-content">
+            Data Ingestion & Schema Mapping
+          </h1>
+          <span className="text-xs font-mono text-content-secondary bg-surface-secondary px-2.5 py-0.5 rounded-full border border-border">
+            Multi-Source Ingestion
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-content-secondary">
+          Upload Bank Statements, Payment Gateway logs, and ERP Invoices. Automatically detect columns, map to canonical schema, and ingest into the ledger.
+        </p>
+      </div>
+
+      {/* 6-Step Progress Stepper */}
+      <div className="rounded-xl border border-border bg-surface-secondary p-4 shadow-xs">
+        <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1">
+          {STEPPER_STEPS.map((step, idx) => {
+            const isCompleted = step.id < currentStep;
+            const isCurrent = step.id === currentStep;
+            return (
+              <div key={step.id} className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <div
+                    className={cn(
+                      "h-6 w-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all",
+                      isCompleted
+                        ? "bg-emerald-500 text-white"
+                        : isCurrent
+                        ? "bg-primary text-white ring-2 ring-primary/40"
+                        : "bg-surface-elevated text-content-muted border border-border"
+                    )}
+                  >
+                    {isCompleted ? "✓" : step.id}
+                  </div>
+                  <span
+                    className={cn(
+                      "text-xs font-medium whitespace-nowrap",
+                      isCompleted ? "text-content-secondary" : isCurrent ? "text-content font-bold" : "text-content-muted"
+                    )}
+                  >
+                    {step.name}
+                  </span>
+                </div>
+                {idx < STEPPER_STEPS.length - 1 && (
+                  <ChevronRight className="h-4 w-4 text-content-muted shrink-0 ml-1" />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {globalStatus === "idle" && files.length === 0 ? (
-        <div className="border-2 border-dashed border-border rounded-xl p-12 text-center bg-card">
-          <Upload className="w-16 h-16 text-gray-500 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-white mb-2">Drag and drop your financial files here</h2>
-          <p className="text-gray-400 mb-8 max-w-md mx-auto">
-            Upload multiple files at once. You can mix CSV, XLSX, XLS, and PDF files containing Bank Statements, Gateway captures, or Invoices.
-          </p>
-          
-          <label className="bg-primary hover:bg-primary-dark cursor-pointer text-white font-medium py-3 px-8 rounded-xl transition-colors inline-flex items-center gap-2">
-            <Plus className="w-5 h-5" />
-            Select Files
-            <input 
-              type="file" 
-              multiple
-              accept=".csv, .xls, .xlsx, .pdf"
-              onChange={handleFileChange}
-              className="hidden"
-            />
-          </label>
+        <div className="space-y-6">
+          {/* Multi-Lane Dropzone */}
+          <div className="border-2 border-dashed border-border hover:border-border-strong rounded-2xl p-10 text-center bg-surface-secondary transition-all">
+            <Upload className="w-12 h-12 text-primary-light mx-auto mb-3" />
+            <h2 className="text-lg font-bold text-content mb-1">
+              Select or Drop Financial Dataset Files
+            </h2>
+            <p className="text-xs text-content-secondary mb-6 max-w-lg mx-auto">
+              Upload multiple files simultaneously. Accepts CSV, XLSX, XLS, and PDF exports for Bank Statements, Payment Gateway captures, and ERP Invoices.
+            </p>
+            
+            <label className="bg-primary hover:bg-primary-hover cursor-pointer text-white font-semibold py-2.5 px-6 rounded-xl transition-all inline-flex items-center gap-2 text-xs shadow-sm focus-ring">
+              <Plus className="w-4 h-4" />
+              Browse Financial Files
+              <input 
+                type="file" 
+                multiple
+                accept=".csv, .xls, .xlsx, .pdf"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          {/* 3 Source Lanes Overview */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="rounded-xl border border-border bg-surface-secondary p-4 space-y-2 shadow-xs">
+              <div className="flex items-center gap-2 text-sky-600 dark:text-sky-400 text-xs font-semibold uppercase tracking-wider">
+                <Building2 className="h-4 w-4" /> Bank Statements
+              </div>
+              <p className="text-xs text-content-secondary">
+                UTR numbers, clearing dates, credit/debit balances, and settlement narrations.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-border bg-surface-secondary p-4 space-y-2 shadow-xs">
+              <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 text-xs font-semibold uppercase tracking-wider">
+                <CreditCard className="h-4 w-4" /> Gateway Logs
+              </div>
+              <p className="text-xs text-content-secondary">
+                Gross capture, Razorpay/Stripe order IDs, MDR processing fees, GST, and net settlement.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-border bg-surface-secondary p-4 space-y-2 shadow-xs">
+              <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 text-xs font-semibold uppercase tracking-wider">
+                <FileText className="h-4 w-4" /> ERP Invoices
+              </div>
+              <p className="text-xs text-content-secondary">
+                Invoice numbers, client entities, billed tax, PO references, and receivable amounts.
+              </p>
+            </div>
+          </div>
         </div>
       ) : globalStatus === "success" ? (
-        <div className="bg-card border border-border rounded-xl p-12 text-center">
-          <CheckCircle className="w-20 h-20 text-emerald-500 mx-auto mb-6" />
-          <h2 className="text-3xl font-bold text-white mb-2">Upload Successful!</h2>
-          <p className="text-gray-400 mb-6 text-lg">Dataset "{datasetName}" is ready for reconciliation.</p>
+        /* Ingestion Success Completion State */
+        <div className="bg-surface-secondary border border-emerald-500/30 rounded-2xl p-10 text-center space-y-6 shadow-xs">
+          <div className="h-16 w-16 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mx-auto text-emerald-500 dark:text-emerald-400">
+            <CheckCircle2 className="w-9 h-9" />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-content">Dataset Ingestion Complete</h2>
+            <p className="text-xs text-content-secondary mt-1 max-w-md mx-auto">
+              Dataset <strong className="text-content font-mono">"{datasetName}"</strong> has been successfully canonicalized and ingested into the active reconciliation ledger.
+            </p>
+          </div>
           
           {ingestionResult?.files && (
-            <div className="max-w-lg mx-auto bg-background border border-border rounded-xl p-6 mb-8 text-left space-y-4">
-              <h3 className="font-semibold text-white border-b border-border pb-2">Ingestion Summary</h3>
+            <div className="max-w-md mx-auto bg-surface border border-border rounded-xl p-4 text-left space-y-2.5 shadow-xs">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-content border-b border-border pb-2">
+                Ingestion Summary
+              </h3>
               {ingestionResult.files.map((f: any, idx: number) => (
-                <div key={idx} className="flex justify-between items-center text-sm">
-                  <span className="text-gray-400 font-mono">{f.file_type}</span>
-                  <span className="text-emerald-400">
-                    {f.rows_ingested} ingested
-                    {f.rows_skipped_as_duplicate > 0 && ` (${f.rows_skipped_as_duplicate} duplicate rows skipped)`}
+                <div key={idx} className="flex justify-between items-center text-xs">
+                  <span className="text-content font-mono font-medium">{f.file_type}</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold tabular-nums">
+                    {f.rows_ingested} records ingested
+                    {f.rows_skipped_as_duplicate > 0 && ` (${f.rows_skipped_as_duplicate} duplicates deduplicated)`}
                   </span>
                 </div>
               ))}
             </div>
           )}
 
-          <div className="flex items-center justify-center gap-4">
+          <div className="flex items-center justify-center gap-3 pt-2">
             <button
               onClick={clearAllFiles}
-              className="border border-border bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium py-3 px-6 rounded-xl inline-flex items-center gap-2 text-lg transition-colors"
+              className="border border-border bg-surface hover:bg-surface-elevated text-content font-semibold py-2 px-5 rounded-xl inline-flex items-center gap-1.5 text-xs transition-colors focus-ring shadow-xs"
             >
-              <RotateCcw className="w-5 h-5" /> Upload Another Batch
+              <RotateCcw className="w-3.5 h-3.5" /> Upload Another File
             </button>
-            <Link href="/" className="bg-primary hover:bg-primary-dark text-white font-medium py-3 px-8 rounded-xl inline-flex items-center gap-2 text-lg transition-colors">
-              Go to Dashboard <ChevronRight className="w-5 h-5" />
+            <Link 
+              href="/" 
+              className="bg-primary hover:bg-primary-hover text-white font-bold py-2 px-6 rounded-xl inline-flex items-center gap-1.5 text-xs transition-all shadow-sm focus-ring"
+            >
+              Go to Financial Control Center <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>
         </div>
       ) : (
+        /* Active Mapping Configuration Workspace */
         <div className="space-y-6">
           
-          <div className="bg-card border border-border rounded-xl p-6 flex justify-between items-center">
+          {/* Dataset Configuration Bar */}
+          <div className="bg-surface-secondary border border-border rounded-xl p-4 flex flex-col sm:flex-row justify-between sm:items-center gap-3 shadow-xs">
             <div>
-              <h2 className="text-lg font-semibold text-white">Dataset Configuration</h2>
-              <p className="text-sm text-gray-400">All files below will be grouped into this dataset.</p>
+              <h2 className="text-sm font-semibold text-content">Dataset Configuration</h2>
+              <p className="text-xs text-content-secondary">All parsed files below will be unified under this dataset batch.</p>
             </div>
             <input 
               value={datasetName}
               onChange={(e) => setDatasetName(e.target.value)}
-              placeholder="E.g., Q3 Financials"
-              className="bg-background border border-border rounded-lg px-4 py-2 text-sm w-64 focus:border-primary focus:outline-none"
+              placeholder="e.g., March 2026 Monthly Close"
+              className="bg-surface border border-border rounded-lg px-3 py-1.5 text-xs text-content w-full sm:w-64 focus-ring placeholder-content-muted"
             />
           </div>
 
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white">Files ({files.length})</h2>
-            <div className="flex items-center gap-3">
+            <h2 className="text-base font-bold text-white">Staged Files ({files.length})</h2>
+            <div className="flex items-center gap-2.5">
               <button
                 type="button"
                 onClick={clearAllFiles}
-                className="text-sm text-rose-400 hover:text-rose-300 flex items-center gap-1.5 font-medium px-3 py-1.5 rounded-lg border border-rose-500/20 bg-rose-950/20 hover:bg-rose-900/30 transition-all"
+                className="text-xs text-rose-600 dark:text-rose-300 hover:text-rose-700 dark:hover:text-rose-200 flex items-center gap-1 font-semibold px-2.5 py-1 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 transition-all focus-ring shadow-xs"
               >
-                <RotateCcw className="w-3.5 h-3.5" /> Clear & Start Over
+                <RotateCcw className="w-3 h-3" /> Clear & Reset
               </button>
-              <label className="cursor-pointer text-sm text-primary hover:text-primary-light flex items-center gap-1 font-medium">
-                <Plus className="w-4 h-4" /> Add More Files
+              <label className="cursor-pointer text-xs text-content hover:text-primary flex items-center gap-1 font-semibold px-2.5 py-1 rounded-lg bg-surface border border-border hover:bg-surface-elevated transition-colors shadow-xs">
+                <Plus className="w-3 h-3" /> Add More Files
                 <input 
                   type="file" 
                   multiple
@@ -264,128 +396,163 @@ export default function UploadPage() {
             </div>
           </div>
 
-          {files.map((f) => (
-            <div key={f.id} className="bg-card border border-border rounded-xl p-6 relative">
-              <button 
-                onClick={() => removeFile(f.id)}
-                className="absolute top-4 right-4 p-1 text-gray-500 hover:text-red-400 rounded-full hover:bg-red-500/10 transition-colors"
-                title="Remove file"
-              >
-                <X className="w-5 h-5" />
-              </button>
-              
-              <div className="flex justify-between items-start mb-6 pr-8">
-                <div>
-                  <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-                    <FileText className="w-5 h-5 text-primary" />
-                    {f.file.name}
-                  </h3>
-                  {f.status === "uploading" && <span className="text-sm text-blue-400 animate-pulse">Analyzing file...</span>}
-                  {f.status === "error" && <span className="text-sm text-red-400 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> {f.errorMsg}</span>}
-                  {f.status === "mapped" && <span className="text-sm text-emerald-400 flex items-center gap-1"><CheckCircle className="w-4 h-4" /> Parsed ({f.fileData?.row_count} rows)</span>}
-                </div>
+          {files.map((f) => {
+            const schemaFields = getTargetSchemaFields(f.dataType);
+            const mappedCount = schemaFields.filter(field => Boolean(f.mapping[field.key])).length;
+            const requiredMissing = schemaFields.filter(field => field.required && !f.mapping[field.key]);
+
+            return (
+              <div key={f.id} className="bg-surface-secondary border border-border rounded-xl p-5 relative space-y-4 shadow-xs">
+                <button 
+                  onClick={() => removeFile(f.id)}
+                  className="absolute top-4 right-4 p-1 text-content-muted hover:text-rose-600 dark:hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-colors focus-ring"
+                  title="Remove file"
+                >
+                  <X className="w-4 h-4" />
+                </button>
                 
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pr-8">
+                  <div>
+                    <h3 className="text-sm font-bold text-content flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-primary-light" />
+                      {f.file.name}
+                    </h3>
+                    {f.status === "uploading" && <span className="text-xs text-sky-600 dark:text-sky-400 animate-pulse font-medium">Analyzing columns & headers...</span>}
+                    {f.status === "error" && <span className="text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1 font-medium"><AlertTriangle className="w-3.5 h-3.5" /> {f.errorMsg}</span>}
+                    {f.status === "mapped" && (
+                      <span className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-semibold">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Parsed ({f.fileData?.row_count} rows detected)
+                      </span>
+                    )}
+                  </div>
+                  
+                  {f.status === "mapped" && (
+                    <div className="flex items-center gap-2 bg-surface px-3 py-1.5 rounded-lg border border-border shadow-xs">
+                      <span className="text-xs text-content-secondary font-medium">Data Type:</span>
+                      <select 
+                        value={f.dataType}
+                        onChange={(e) => updateFileState(f.id, { dataType: e.target.value })}
+                        className="bg-transparent text-content text-xs font-bold focus:outline-none"
+                      >
+                        <option value="BANK" className="bg-surface text-content">Bank Transactions</option>
+                        <option value="GATEWAY" className="bg-surface text-content">Payment Gateway</option>
+                        <option value="INVOICE" className="bg-surface text-content">ERP Invoices</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {/* Auto-Mapping Validation Summary Bar */}
                 {f.status === "mapped" && (
-                  <div className="flex items-center gap-3 bg-background px-3 py-1.5 rounded-lg border border-border">
-                    <span className="text-sm text-gray-400">Data Type:</span>
-                    <select 
-                      value={f.dataType}
-                      onChange={(e) => updateFileState(f.id, { dataType: e.target.value })}
-                      className="bg-transparent text-white text-sm font-medium focus:outline-none"
-                    >
-                      <option value="BANK">Bank Transactions</option>
-                      <option value="GATEWAY">Gateway Payments</option>
-                      <option value="INVOICE">Invoices</option>
-                    </select>
+                  <div className={cn(
+                    "flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs font-mono shadow-xs",
+                    requiredMissing.length === 0
+                      ? "bg-emerald-500/10 border border-emerald-500/25 text-emerald-700 dark:text-emerald-300"
+                      : "bg-amber-500/10 border border-amber-500/25 text-amber-700 dark:text-amber-300"
+                  )}>
+                    <div className="flex items-center gap-1.5">
+                      {requiredMissing.length === 0 ? (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      )}
+                      <span>
+                        Schema Validation: {mappedCount} of {schemaFields.length} columns mapped
+                        {requiredMissing.length > 0 && ` · Missing required: ${requiredMissing.map(m => m.label).join(", ")}`}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-bold">
+                      {requiredMissing.length === 0 ? "✓ Ready to Ingest" : "Action Required"}
+                    </span>
+                  </div>
+                )}
+
+                {f.status === "mapped" && (
+                  <div className="overflow-x-auto rounded-lg border border-border bg-surface shadow-xs">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-surface-secondary text-content-secondary uppercase text-[10px] border-b border-border">
+                        <tr>
+                          <th className="py-2.5 px-3 w-1/4">Canonical Target Field</th>
+                          <th className="py-2.5 px-3 w-1/3">Source File Column</th>
+                          <th className="py-2.5 px-3 w-5/12">Sample Data Preview</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {schemaFields.map((field) => {
+                          const selectedCol = f.mapping[field.key] || "";
+                          const sampleValues = selectedCol && f.fileData?.column_previews?.[selectedCol] 
+                            ? f.fileData.column_previews[selectedCol] 
+                            : [];
+                          return (
+                            <tr key={field.key} className="hover:bg-surface-secondary/40 transition-colors">
+                              <td className="py-2.5 px-3">
+                                <div className="font-mono text-xs font-bold text-content flex items-center gap-1.5">
+                                  {field.label}
+                                  {field.required && <span className="text-rose-500 font-bold">*</span>}
+                                </div>
+                                <div className="text-[11px] text-content-secondary">{field.desc}</div>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <select 
+                                  value={selectedCol}
+                                  onChange={(e) => {
+                                    const newMapping = { ...f.mapping, [field.key]: e.target.value };
+                                    updateFileState(f.id, { mapping: newMapping });
+                                  }}
+                                  className="bg-surface-secondary border border-border rounded-lg px-2.5 py-1.5 text-xs font-mono w-full max-w-sm text-content focus-ring"
+                                >
+                                  <option value="">-- Unmapped / Optional --</option>
+                                  {f.fileData?.headers.map((h: string) => (
+                                    <option key={h} value={h}>{h}</option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                {sampleValues.length > 0 ? (
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {sampleValues.map((val: string, vIdx: number) => (
+                                      <span key={vIdx} className="inline-block bg-primary/10 border border-primary/25 text-primary rounded px-1.5 py-0.5 text-[11px] font-mono font-semibold">
+                                        {val}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : selectedCol ? (
+                                  <span className="text-xs text-content-muted italic">No non-empty samples</span>
+                                ) : (
+                                  <span className="text-xs text-content-muted">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
-
-              {f.status === "mapped" && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-border text-gray-400 text-xs uppercase tracking-wider">
-                        <th className="py-2.5 px-3 w-1/4">Target Field</th>
-                        <th className="py-2.5 px-3 w-1/3">Mapped Source Column</th>
-                        <th className="py-2.5 px-3 w-5/12">3 Real Sample Values from File</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/40">
-                      {getTargetSchemaFields(f.dataType).map((field) => {
-                        const selectedCol = f.mapping[field.key] || "";
-                        const sampleValues = selectedCol && f.fileData?.column_previews?.[selectedCol] 
-                          ? f.fileData.column_previews[selectedCol] 
-                          : [];
-                        return (
-                          <tr key={field.key} className="hover:bg-card/40 transition-colors">
-                            <td className="py-3 px-3">
-                              <div className="font-mono text-sm font-semibold text-white flex items-center gap-1.5">
-                                {field.label}
-                                {field.required && <span className="text-rose-400 font-bold">*</span>}
-                              </div>
-                              <div className="text-xs text-gray-400">{field.desc}</div>
-                            </td>
-                            <td className="py-3 px-3">
-                              <select 
-                                value={selectedCol}
-                                onChange={(e) => {
-                                  const newMapping = { ...f.mapping, [field.key]: e.target.value };
-                                  updateFileState(f.id, { mapping: newMapping });
-                                }}
-                                className="bg-background border border-border rounded-lg px-3 py-2 text-xs font-mono w-full max-w-sm focus:border-primary focus:outline-none"
-                              >
-                                <option value="">-- Unmapped / Optional --</option>
-                                {f.fileData?.headers.map((h: string) => (
-                                  <option key={h} value={h}>{h}</option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="py-3 px-3">
-                              {sampleValues.length > 0 ? (
-                                <div className="flex flex-wrap gap-1.5">
-                                  {sampleValues.map((val: string, vIdx: number) => (
-                                    <span key={vIdx} className="inline-block bg-primary/10 border border-primary/30 text-primary-light rounded px-2 py-0.5 text-xs font-mono">
-                                      {val}
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : selectedCol ? (
-                                <span className="text-xs text-gray-500 italic">No non-empty samples</span>
-                              ) : (
-                                <span className="text-xs text-gray-600">—</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
 
           {globalError && (
-            <div className="p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-400 flex items-center justify-center gap-2">
-              <AlertTriangle className="w-5 h-5" />
+            <div className="p-3.5 bg-rose-500/10 border border-rose-500/40 rounded-xl text-rose-700 dark:text-rose-300 text-xs flex items-center justify-center gap-2 shadow-xs">
+              <AlertTriangle className="w-4 h-4" />
               {globalError}
             </div>
           )}
 
-          <div className="flex justify-end gap-4 mt-8">
+          <div className="flex justify-end gap-3 pt-2">
             <button 
               onClick={() => { setGlobalStatus("idle"); setFiles([]); setDatasetName(""); }}
-              className="px-6 py-2.5 text-gray-400 hover:text-white transition-colors font-medium rounded-lg"
+              className="px-4 py-2 text-content-secondary hover:text-content transition-colors text-xs font-semibold rounded-lg"
             >
-              Cancel Everything
+              Cancel
             </button>
             <button 
               onClick={handleConfirm}
               disabled={globalStatus === "confirming" || files.some(f => f.status === "uploading")}
-              className="bg-primary hover:bg-primary-dark disabled:opacity-50 text-white font-bold py-2.5 px-8 rounded-xl shadow-lg glow-primary transition-all flex items-center gap-2"
+              className="bg-primary hover:bg-primary-hover disabled:opacity-50 text-white font-bold py-2 px-6 rounded-xl transition-all shadow-sm flex items-center gap-2 text-xs focus-ring"
             >
-              {globalStatus === "confirming" ? "Ingesting Data..." : "Confirm & Ingest All"}
+              {globalStatus === "confirming" ? "Ingesting Dataset..." : "Confirm Mapping & Ingest All"}
             </button>
           </div>
         </div>

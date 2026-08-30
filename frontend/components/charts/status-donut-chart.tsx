@@ -6,10 +6,25 @@ interface StatusDonutChartProps {
   data: Array<{ name: string; value: number; color: string }>;
 }
 
+const CustomTooltip = ({ active, payload }: any) => {
+  if (active && payload && payload.length) {
+    const item = payload[0];
+    return (
+      <div className="rounded-lg border border-border bg-surface p-2.5 shadow-lg text-xs space-y-0.5">
+        <p className="font-semibold text-content">{item.name}</p>
+        <p className="text-content-secondary tabular-nums">
+          <span className="font-bold text-content">{item.value}</span> transactions
+        </p>
+      </div>
+    );
+  }
+  return null;
+};
+
 export function StatusDonutChart({ data }: StatusDonutChartProps) {
   if (!data || data.length === 0 || data.every(d => d.value === 0)) {
     return (
-      <div className="flex h-64 items-center justify-center text-xs text-gray-500">
+      <div className="flex h-64 items-center justify-center text-xs text-content-muted">
         No reconciliation data available. Run the pipeline to populate.
       </div>
     );
@@ -31,23 +46,14 @@ export function StatusDonutChart({ data }: StatusDonutChartProps) {
             dataKey="value"
           >
             {validData.map((entry, index) => (
-              <Cell key={`cell-${index}`} fill={entry.color} stroke="#111827" strokeWidth={2} />
+              <Cell key={`cell-${index}`} fill={entry.color} stroke="var(--bg-surface)" strokeWidth={2} />
             ))}
           </Pie>
-          <Tooltip
-            contentStyle={{
-              backgroundColor: "#111827",
-              borderColor: "#374151",
-              borderRadius: "0.5rem",
-              fontSize: "12px",
-              color: "#fff",
-            }}
-            formatter={(val: number) => [`${val} records`, "Count"]}
-          />
+          <Tooltip content={<CustomTooltip />} />
           <Legend
             verticalAlign="bottom"
             height={36}
-            formatter={(value) => <span className="text-xs text-gray-300 mr-2">{value}</span>}
+            formatter={(value) => <span className="text-xs text-content-secondary mr-2">{value}</span>}
           />
         </PieChart>
       </ResponsiveContainer>

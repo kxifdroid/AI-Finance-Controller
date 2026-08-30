@@ -6,19 +6,24 @@ import {
   Filter, 
   Layers, 
   Eye, 
-  Sparkles, 
-  ShieldCheck, 
-  AlertTriangle, 
-  CheckCircle2, 
-  Clock, 
-  Copy,
+  RotateCcw,
   ChevronLeft,
   ChevronRight,
-  RotateCcw
+  SlidersHorizontal,
+  XCircle,
+  RefreshCw
 } from "lucide-react";
 import { MatchRecord } from "@/types";
 import { fetchTransactions, resetReconciliation } from "@/lib/api";
 import { MatchDetailModal } from "@/components/match-detail-modal";
+import { 
+  StatusBadge, 
+  RiskBadge, 
+  MatchTypeTag, 
+  FilterChip, 
+  EmptyState, 
+  SkeletonRows 
+} from "@/components/ui-kit";
 import { formatCurrency, formatDate, formatPercent, cleanId, cn } from "@/lib/utils";
 
 export default function TransactionsPage() {
@@ -28,10 +33,17 @@ export default function TransactionsPage() {
   const [pageSize] = useState(25);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [riskFilter, setRiskFilter] = useState<string>("");
+  const [matchTypeFilter, setMatchTypeFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
+  const [filterPanelOpen, setFilterPanelOpen] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [isResetting, setIsResetting] = useState<boolean>(false);
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
+
+  // Summary statistics computed across currently visible/loaded transactions
+  const matchedSummary = transactions.filter(t => t.decision === "MATCH").length;
+  const reviewSummary = transactions.filter(t => t.decision === "REVIEW").length;
+  const exceptionSummary = transactions.filter(t => t.decision === "EXCEPTION").length;
 
   const handleResetLedger = async () => {
     if (!window.confirm("Reset and clear all transaction ledger records to start 100% fresh?")) return;
@@ -62,7 +74,7 @@ export default function TransactionsPage() {
       setTransactions(res.items);
       setTotal(res.total);
     } catch (err) {
-      console.error(err);
+      console.error("Failed to load transactions:", err);
     } finally {
       setLoading(false);
     }
@@ -70,7 +82,7 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     loadTransactions();
-  }, [page, statusFilter, riskFilter]);
+  }, [page, statusFilter, riskFilter, matchTypeFilter]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,223 +90,334 @@ export default function TransactionsPage() {
     loadTransactions();
   };
 
-  const getStatusBadge = (decision: string, matchType?: string) => {
-    if (matchType === "FEE_RECONCILED") {
-      return <span className="bg-teal-500/10 text-teal-400 border border-teal-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">FEE MATCH</span>;
-    }
-    if (matchType === "MANY_TO_ONE") {
-      return <span className="bg-purple-500/10 text-purple-400 border border-purple-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">BATCH MATCH</span>;
-    }
-    if (matchType === "TIMING_DIFFERENCE") {
-      return <span className="bg-blue-500/10 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">CLEARED (T+2)</span>;
-    }
-    switch (decision) {
-      case "MATCH":
-        return <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">MATCH</span>;
-      case "REVIEW":
-        return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">REVIEW</span>;
-      case "EXCEPTION":
-        return <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">EXCEPTION</span>;
-      case "DUPLICATE":
-        return <span className="bg-purple-500/10 text-purple-400 border border-purple-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">DUPLICATE</span>;
-      case "MISSING":
-        return <span className="bg-gray-500/10 text-gray-400 border border-gray-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">MISSING</span>;
-      default:
-        return <span className="bg-gray-500/10 text-gray-400 border border-gray-500/30 px-2 py-0.5 rounded-full text-[11px] font-semibold">{decision}</span>;
-    }
+  const clearAllFilters = () => {
+    setStatusFilter("");
+    setRiskFilter("");
+    setMatchTypeFilter("");
+    setSearch("");
+    setPage(1);
   };
 
-  const getRiskBadge = (risk: string) => {
-    switch (risk) {
-      case "HIGH":
-        return <span className="text-rose-400 text-xs font-semibold">HIGH</span>;
-      case "MEDIUM":
-        return <span className="text-amber-400 text-xs font-semibold">MEDIUM</span>;
-      default:
-        return <span className="text-emerald-400 text-xs font-semibold">LOW</span>;
-    }
-  };
-
+  const hasActiveFilters = Boolean(statusFilter || riskFilter || matchTypeFilter || search);
   const totalPages = Math.ceil(total / pageSize) || 1;
 
   return (
     <div className="space-y-6">
       
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-4">
+      {/* Header & Contextual Summary */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-            <Layers className="h-6 w-6 text-primary-light" />
-            Transaction Ledger Explorer
-          </h1>
-          <p className="mt-1 text-xs text-gray-400">
-            Search and inspect reconciled 3-way transactions across Bank, Gateway, and ERP Invoices.
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl sm:text-[26px] font-bold tracking-tight text-content">
+              Transaction Ledger
+            </h1>
+            <span className="text-xs font-mono text-content-secondary bg-surface-secondary px-2.5 py-0.5 rounded-full border border-border">
+              {total} Reconciliations
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-content-secondary">
+            Review every 3-way reconciliation unit across Bank, Gateway, and ERP sources with deterministic audit trails.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-gray-400 font-mono">
-            Showing {transactions.length} of {total} records
+
+        {/* Counter Summary Pills */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 rounded-lg bg-surface-secondary border border-border px-2.5 py-1 text-xs shadow-xs">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            <span className="text-content-secondary">Matched:</span>
+            <span className="font-bold text-content tabular-nums">{matchedSummary}</span>
+          </div>
+          <div className="flex items-center gap-1.5 rounded-lg bg-surface-secondary border border-border px-2.5 py-1 text-xs shadow-xs">
+            <span className="h-2 w-2 rounded-full bg-amber-500" />
+            <span className="text-content-secondary">Review:</span>
+            <span className="font-bold text-amber-600 dark:text-amber-300 tabular-nums">{reviewSummary}</span>
+          </div>
+          <div className="flex items-center gap-1.5 rounded-lg bg-surface-secondary border border-border px-2.5 py-1 text-xs shadow-xs">
+            <span className="h-2 w-2 rounded-full bg-rose-500" />
+            <span className="text-content-secondary">Exceptions:</span>
+            <span className="font-bold text-rose-600 dark:text-rose-300 tabular-nums">{exceptionSummary}</span>
           </div>
           <button
             onClick={handleResetLedger}
             disabled={isResetting || total === 0}
-            className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/20 px-3 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-900/40 hover:text-rose-200 transition-all disabled:opacity-40"
-            title="Reset and clear all transactions"
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-secondary px-2.5 py-1 text-xs font-medium text-content-secondary hover:text-rose-600 dark:hover:text-rose-300 hover:border-rose-500/40 hover:bg-rose-500/10 transition-all disabled:opacity-40 focus-ring shadow-xs"
+            title="Reset and clear ledger"
           >
             <RotateCcw className={cn("h-3.5 w-3.5", isResetting && "animate-spin")} />
-            Reset Ledger
+            Reset
           </button>
         </div>
       </div>
 
-      {/* Filter & Search Bar */}
-      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-card p-3 rounded-xl border border-border">
-        
-        {/* Search */}
-        <form onSubmit={handleSearchSubmit} className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by Match ID, reference code, customer, or description..."
-            className="w-full rounded-lg border border-border bg-background/70 pl-9 pr-4 py-1.5 text-xs text-white placeholder-gray-500 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-          />
-        </form>
+      {/* Unified Search & Filter Toolbar */}
+      <div className="rounded-xl border border-border bg-surface-secondary p-3 space-y-3 shadow-xs">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+          
+          {/* Search Input */}
+          <form onSubmit={handleSearchSubmit} className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-content-muted" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search reference (e.g. ORD-5001), customer, match ID, or description..."
+              className="w-full rounded-lg border border-border bg-surface pl-9 pr-4 py-1.5 text-xs text-content placeholder-content-muted focus-ring"
+            />
+          </form>
 
-        {/* Status Filter Pills */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {["", "MATCH", "REVIEW", "EXCEPTION", "DUPLICATE", "MISSING"].map((st) => (
+          {/* Filter Popover Toggle */}
+          <div className="flex items-center gap-2">
             <button
-              key={st || "ALL"}
-              onClick={() => {
-                setStatusFilter(st);
-                setPage(1);
-              }}
+              onClick={() => setFilterPanelOpen(!filterPanelOpen)}
               className={cn(
-                "px-2.5 py-1 rounded-lg text-xs font-medium transition-all",
-                statusFilter === st
-                  ? "bg-primary text-white font-semibold shadow-sm"
-                  : "bg-background/40 text-gray-400 hover:text-white border border-border hover:bg-gray-800"
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors focus-ring shadow-xs",
+                filterPanelOpen || hasActiveFilters
+                  ? "bg-surface-elevated text-content border-border-strong font-semibold"
+                  : "bg-surface text-content-secondary border-border hover:text-content"
               )}
             >
-              {st || "ALL STATUS"}
-            </button>
-          ))}
-        </div>
-
-        {/* Risk Filter */}
-        <div className="flex items-center gap-1.5">
-          {["", "HIGH", "MEDIUM", "LOW"].map((rk) => (
-            <button
-              key={rk || "ALL_RISK"}
-              onClick={() => {
-                setRiskFilter(rk);
-                setPage(1);
-              }}
-              className={cn(
-                "px-2.5 py-1 rounded-lg text-xs font-medium transition-all",
-                riskFilter === rk
-                  ? "bg-gray-700 text-white font-semibold"
-                  : "bg-background/40 text-gray-500 hover:text-white border border-border"
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span>Filters</span>
+              {hasActiveFilters && (
+                <span className="h-1.5 w-1.5 rounded-full bg-primary-light ml-0.5" />
               )}
-            >
-              {rk ? `${rk} Risk` : "All Risk"}
             </button>
-          ))}
+
+            {hasActiveFilters && (
+              <button
+                onClick={clearAllFilters}
+                className="text-xs text-content-muted hover:text-content px-2 py-1 transition-colors"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
         </div>
 
+        {/* Expandable Filter Controls */}
+        {filterPanelOpen && (
+          <div className="pt-3 border-t border-border grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs animate-fade-in">
+            <div>
+              <label className="text-[11px] font-semibold uppercase text-content-secondary block mb-1">Status</label>
+              <select
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs text-content focus-ring"
+              >
+                <option value="">All Statuses</option>
+                <option value="MATCH">MATCH</option>
+                <option value="REVIEW">REVIEW</option>
+                <option value="EXCEPTION">EXCEPTION</option>
+                <option value="DUPLICATE">DUPLICATE</option>
+                <option value="MISSING">MISSING</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold uppercase text-content-secondary block mb-1">Risk Level</label>
+              <select
+                value={riskFilter}
+                onChange={(e) => {
+                  setRiskFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs text-content focus-ring"
+              >
+                <option value="">All Risk Levels</option>
+                <option value="LOW">LOW</option>
+                <option value="MEDIUM">MEDIUM</option>
+                <option value="HIGH">HIGH</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold uppercase text-content-secondary block mb-1">Topology</label>
+              <select
+                value={matchTypeFilter}
+                onChange={(e) => {
+                  setMatchTypeFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs text-content focus-ring"
+              >
+                <option value="">All Topologies</option>
+                <option value="EXACT">Exact 3-Way</option>
+                <option value="MANY_TO_ONE">Many-to-One Batch</option>
+                <option value="FEE_RECONCILED">Fee Reconciled</option>
+                <option value="TIMING_DIFFERENCE">Timing Difference</option>
+                <option value="AMOUNT_MISMATCH">Amount Mismatch</option>
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Active Filter Chips */}
+        {hasActiveFilters && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            {search && (
+              <FilterChip label="Search" value={`"${search}"`} onRemove={() => setSearch("")} />
+            )}
+            {statusFilter && (
+              <FilterChip label="Status" value={statusFilter} onRemove={() => setStatusFilter("")} />
+            )}
+            {riskFilter && (
+              <FilterChip label="Risk" value={riskFilter} onRemove={() => setRiskFilter("")} />
+            )}
+            {matchTypeFilter && (
+              <FilterChip label="Topology" value={matchTypeFilter} onRemove={() => setMatchTypeFilter("")} />
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Table */}
-      <div className="rounded-xl border border-border bg-card overflow-hidden shadow-sm">
+      {/* Transaction Table */}
+      <div className="rounded-xl border border-border bg-surface-secondary overflow-hidden shadow-xs">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-background/60 text-gray-400 uppercase tracking-wider border-b border-border text-[10px]">
+            <thead className="bg-surface text-content-secondary uppercase tracking-wider border-b border-border text-[10px]">
               <tr>
-                <th className="px-4 py-3">Match ID</th>
+                <th className="px-4 py-3">Transaction / Ref</th>
+                <th className="px-4 py-3">Counterparty</th>
                 <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Counterparty / Reference</th>
                 <th className="px-4 py-3">Amount</th>
+                <th className="px-4 py-3">Match Type</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Confidence</th>
                 <th className="px-4 py-3">Risk</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3 text-right">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                      Loading records...
-                    </div>
+                  <td colSpan={9} className="p-4">
+                    <SkeletonRows rows={6} cols={9} />
                   </td>
                 </tr>
               ) : transactions.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
-                    No transactions matching your filter criteria.
+                  <td colSpan={9} className="py-12 px-4">
+                    <EmptyState
+                      title="No transactions match your criteria"
+                      description="Try adjusting your search query, status filters, or risk levels."
+                      action={
+                        hasActiveFilters ? (
+                          <button
+                            onClick={clearAllFilters}
+                            className="rounded-lg bg-surface-elevated border border-border px-3 py-1.5 text-xs text-content hover:bg-surface focus-ring"
+                          >
+                            Reset all filters
+                          </button>
+                        ) : undefined
+                      }
+                    />
                   </td>
                 </tr>
               ) : (
                 transactions.map((tx) => {
-                  const counterpart = tx.invoice?.customer_name || tx.gateway_transaction?.customer_name || tx.bank_transaction?.description || "Unknown";
-                  const refCode = cleanId(tx.bank_txn_id || tx.gateway_txn_id || tx.invoice_id || tx.match_id);
-                  const amt = tx.bank_transaction?.amount || tx.gateway_transaction?.amount || tx.invoice?.amount || 0;
+                  const counterpart = tx.invoice?.customer_name || tx.gateway_transaction?.customer_name || tx.bank_transaction?.description || "Unknown Counterparty";
+                  const orderId = tx.gateway_transaction?.payment_reference || tx.invoice?.invoice_reference || tx.bank_transaction?.reference || "";
+                  const sourcePills = [
+                    tx.invoice_id ? { label: "INV", id: cleanId(tx.invoice_id) } : null,
+                    tx.gateway_txn_id ? { label: "GTW", id: cleanId(tx.gateway_txn_id) } : null,
+                    tx.bank_txn_id ? { label: "BNK", id: cleanId(tx.bank_txn_id) } : null,
+                  ].filter(Boolean);
+                  const amt = tx.primary_amount || tx.bank_transaction?.amount || tx.gateway_transaction?.amount || tx.invoice?.amount || 0;
                   const dateStr = tx.bank_transaction?.transaction_date || tx.gateway_transaction?.transaction_date || tx.invoice?.invoice_date || tx.created_at;
 
                   return (
                     <tr
                       key={tx.match_id}
                       onClick={() => setSelectedMatchId(tx.match_id)}
-                      className="hover:bg-gray-800/50 cursor-pointer transition-colors"
+                      className="hover:bg-surface-elevated/50 cursor-pointer transition-colors"
                     >
-                      <td className="px-4 py-3 font-mono font-medium text-primary-light">
-                        {tx.match_id}
+                      {/* Transaction / Reference Primary Column */}
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-content font-mono">{orderId || cleanId(tx.match_id)}</span>
+                          {tx.topology === "MANY_TO_ONE" && (
+                            <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-500/30 text-[9px] font-mono font-bold">
+                              BATCH
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-content-muted font-mono mt-0.5">
+                          ID: {cleanId(tx.match_id)}
+                        </div>
                       </td>
-                      <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
-                        {formatDate(dateStr)}
-                      </td>
-                      <td className="px-4 py-3 max-w-md">
-                        <div className="font-medium text-white truncate">{counterpart}</div>
-                        <div className="text-[10px] text-gray-500 font-mono truncate">{refCode}</div>
-                        {tx.explanation && (
-                          <div className="text-[11px] text-gray-400/90 truncate mt-0.5" title={tx.explanation}>
-                            {tx.explanation}
+
+                      {/* Counterparty */}
+                      <td className="px-4 py-3 max-w-[200px]">
+                        <div className="font-medium text-content truncate">{counterpart}</div>
+                        {sourcePills.length > 0 && (
+                          <div className="flex items-center gap-1 mt-0.5 text-[9px] font-mono text-content-secondary">
+                            {sourcePills.map((p, idx) => (
+                              <span key={idx} className="bg-surface px-1 py-0.2 rounded border border-border">
+                                {p!.label}:{p!.id}
+                              </span>
+                            ))}
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 font-bold text-white whitespace-nowrap">
-                        {formatCurrency(amt)}
+
+                      {/* Date */}
+                      <td className="px-4 py-3 text-content-secondary whitespace-nowrap font-mono">
+                        {formatDate(dateStr)}
                       </td>
+
+                      {/* Financial Amount */}
                       <td className="px-4 py-3 whitespace-nowrap">
-                        {getStatusBadge(tx.decision, tx.match_type)}
+                        <div className="font-bold text-content tabular-nums">{formatCurrency(amt)}</div>
+                        {tx.variance_amount !== undefined && Math.abs(tx.variance_amount) >= 0.01 && (
+                          <div className="text-[10px] font-mono text-amber-600 dark:text-amber-400 font-semibold tabular-nums">
+                            Var: {tx.variance_amount > 0 ? "+" : ""}{formatCurrency(tx.variance_amount)}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-4 py-3">
+
+                      {/* Match Type */}
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <MatchTypeTag matchType={tx.reason_code || tx.match_type} />
+                      </td>
+
+                      {/* Status Badge */}
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <StatusBadge status={tx.decision} />
+                      </td>
+
+                      {/* Confidence Score */}
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-gray-300 font-medium">{formatPercent(tx.confidence_score)}</span>
-                          <div className="w-12 bg-gray-800 h-1.5 rounded-full overflow-hidden">
+                          <span className="font-mono text-content font-semibold tabular-nums">
+                            {formatPercent(tx.confidence_score)}
+                          </span>
+                          <div className="w-10 bg-surface-elevated h-1.5 rounded-full overflow-hidden">
                             <div
-                              className="bg-primary h-full rounded-full"
+                              className="bg-primary-light h-full rounded-full"
                               style={{ width: `${Math.min(100, tx.confidence_score * 100)}%` }}
                             />
                           </div>
                         </div>
                       </td>
+
+                      {/* Risk Level */}
                       <td className="px-4 py-3 whitespace-nowrap">
-                        {getRiskBadge(tx.risk_level)}
+                        <RiskBadge risk={tx.risk_level} />
                       </td>
-                      <td className="px-4 py-3 text-right">
+
+                      {/* View Action Trigger */}
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedMatchId(tx.match_id);
                           }}
-                          className="rounded-lg bg-gray-800 px-2.5 py-1 text-[11px] font-medium text-gray-300 hover:bg-primary hover:text-white transition-colors"
+                          className="rounded-lg bg-surface-elevated border border-border px-2.5 py-1 text-[11px] font-semibold text-content hover:bg-surface transition-colors focus-ring shadow-xs"
                         >
-                          3-Way View
+                          View
                         </button>
                       </td>
                     </tr>
@@ -305,32 +428,33 @@ export default function TransactionsPage() {
           </table>
         </div>
 
-        {/* Pagination Controls */}
-        <div className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-gray-400">
+        {/* Pagination Footer */}
+        <div className="flex items-center justify-between border-t border-border px-4 py-3 text-xs text-content-secondary bg-surface/50">
           <div>
-            Page <span className="font-medium text-white">{page}</span> of <span className="font-medium text-white">{totalPages}</span>
+            Page <span className="font-semibold text-content tabular-nums">{page}</span> of{" "}
+            <span className="font-semibold text-content tabular-nums">{totalPages}</span>
           </div>
           <div className="flex items-center gap-2">
             <button
               disabled={page <= 1}
               onClick={() => setPage(page - 1)}
-              className="flex items-center gap-1 rounded-lg border border-border bg-background/50 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-40"
+              className="rounded-lg border border-border bg-surface px-3 py-1 text-content-secondary hover:text-content hover:bg-surface-elevated disabled:opacity-40 transition-colors focus-ring"
             >
-              <ChevronLeft className="h-4 w-4" /> Previous
+              Previous
             </button>
             <button
               disabled={page >= totalPages}
               onClick={() => setPage(page + 1)}
-              className="flex items-center gap-1 rounded-lg border border-border bg-background/50 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-40"
+              className="rounded-lg border border-border bg-surface px-3 py-1 text-content-secondary hover:text-content hover:bg-surface-elevated disabled:opacity-40 transition-colors focus-ring"
             >
-              Next <ChevronRight className="h-4 w-4" />
+              Next
             </button>
           </div>
         </div>
 
       </div>
 
-      {/* 3-Way Match Modal */}
+      {/* 3-Way Match Investigation Modal */}
       {selectedMatchId && (
         <MatchDetailModal
           matchId={selectedMatchId}

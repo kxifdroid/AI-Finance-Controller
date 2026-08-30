@@ -44,11 +44,19 @@ class ReconciliationRunResponse(BaseModel):
 class MatchResponse(BaseModel):
     match_id: str
     run_id: str
+    topology: str = "ONE_TO_ONE"
+    reason_code: Optional[str] = None
     bank_txn_id: Optional[str] = None
     gateway_txn_id: Optional[str] = None
     invoice_id: Optional[str] = None
+    primary_amount: float = 0.0
+    expected_amount: float = 0.0
+    settled_amount: float = 0.0
+    variance_amount: float = 0.0
+    amounts_json: Optional[str] = None
     decision: str
     confidence_score: float
+    deterministic_confidence: float = 1.0
     risk_level: str
     explanation: str
     recommended_action: str
@@ -59,8 +67,10 @@ class MatchResponse(BaseModel):
     reference_similarity: float
     customer_similarity: float
     composite_score: float
-    verified_by_ai: bool
+    verified_by_ai: bool = False
     ai_verification_status: Optional[str] = None
+    ai_confidence: Optional[float] = None
+    ai_explanation: Optional[str] = None
     ai_raw_response: Optional[str] = None
     created_at: datetime
 

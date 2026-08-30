@@ -61,19 +61,37 @@ class Match(Base):
     match_id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     run_id: Mapped[str] = mapped_column(String(64), ForeignKey("reconciliation_runs.run_id"), nullable=False, index=True)
     
+    # Topology and Parent/Child identification
+    topology: Mapped[str] = mapped_column(String(32), default="ONE_TO_ONE", index=True) # ONE_TO_ONE, MANY_TO_ONE, ONE_TO_MANY, ORPHAN
+    reason_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+
+    # Legacy 1-to-1 scalar IDs (retained for backward compatibility and fast direct lookups)
     bank_txn_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("bank_transactions.bank_txn_id"), nullable=True, index=True)
     gateway_txn_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("gateway_transactions.gateway_txn_id"), nullable=True, index=True)
     invoice_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("invoices.invoice_id"), nullable=True, index=True)
     
+    # Parent/Child association JSON arrays of IDs
+    bank_txn_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    gateway_txn_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    invoice_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Structured Amount Decomposition
+    amounts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    primary_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    expected_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    settled_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    variance_amount: Mapped[float] = mapped_column(Float, default=0.0)
+
     decision: Mapped[str] = mapped_column(String(32), index=True) # MATCH, REVIEW, EXCEPTION, DUPLICATE, MISSING
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
+    deterministic_confidence: Mapped[float] = mapped_column(Float, default=1.0)
     risk_level: Mapped[str] = mapped_column(String(16), default="LOW") # LOW, MEDIUM, HIGH
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     recommended_action: Mapped[str] = mapped_column(String(256), default="None required")
 
     # Match classification and evidence
     match_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
-    # Types: EXACT, REFERENCE, FUZZY, SETTLEMENT, MANY_TO_ONE, FEE_RECONCILED
+    # Types: EXACT, REFERENCE, FUZZY, SETTLEMENT, MANY_TO_ONE, FEE_RECONCILED, TIMING_DIFFERENCE, AMOUNT_MISMATCH
     evidence_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Fee-aware reconciliation fields (populated when match_type == FEE_RECONCILED)
@@ -89,9 +107,12 @@ class Match(Base):
     customer_similarity: Mapped[float] = mapped_column(Float, default=0.0)
     composite_score: Mapped[float] = mapped_column(Float, default=0.0)
     
-    # AI flags
+    # AI flags & Segregated outputs (Cannot override accounting decision)
     verified_by_ai: Mapped[bool] = mapped_column(Boolean, default=False)
     ai_verification_status: Mapped[Optional[str]] = mapped_column(String(32), default="NOT_REQUIRED", nullable=True)
+    ai_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ai_explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ai_recommended_action: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     ai_raw_response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

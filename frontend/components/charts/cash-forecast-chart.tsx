@@ -15,10 +15,27 @@ interface CashForecastChartProps {
   points: ForecastPoint[];
 }
 
+const CustomForecastTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="rounded-lg border border-border bg-surface p-3 shadow-xl text-xs space-y-1.5 min-w-[180px]">
+        <p className="font-bold text-content border-b border-border pb-1">{label}</p>
+        <div className="space-y-1">
+          <div className="flex justify-between items-center text-indigo-600 dark:text-indigo-400 font-semibold">
+            <span>Projected Balance:</span>
+            <span className="tabular-nums">₹{payload[0].value?.toLocaleString()}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
+
 export function CashForecastChart({ points }: CashForecastChartProps) {
   if (!points || points.length === 0) {
     return (
-      <div className="flex h-72 items-center justify-center text-xs text-gray-500">
+      <div className="flex h-72 items-center justify-center text-xs text-content-muted">
         No forecast points available.
       </div>
     );
@@ -42,29 +59,17 @@ export function CashForecastChart({ points }: CashForecastChartProps) {
         <AreaChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
           <defs>
             <linearGradient id="balanceGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.4} />
+              <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.35} />
               <stop offset="95%" stopColor="#4f46e5" stopOpacity={0.0} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
-          <XAxis dataKey="name" tick={{ fill: "#9ca3af", fontSize: 11 }} />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+          <XAxis dataKey="name" tick={{ fill: "var(--text-secondary)", fontSize: 11 }} />
           <YAxis
-            tick={{ fill: "#9ca3af", fontSize: 11 }}
+            tick={{ fill: "var(--text-secondary)", fontSize: 11 }}
             tickFormatter={(val) => `₹${(val / 1000).toFixed(0)}k`}
           />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: "#111827",
-              borderColor: "#374151",
-              borderRadius: "0.5rem",
-              fontSize: "12px",
-              color: "#fff",
-            }}
-            formatter={(val: number, name: string) => [
-              `₹${val.toLocaleString()}`,
-              name === "projectedBalance" ? "Projected Cash Position" : name,
-            ]}
-          />
+          <Tooltip content={<CustomForecastTooltip />} />
           <Area
             type="monotone"
             dataKey="projectedBalance"

@@ -19,6 +19,9 @@ export interface GatewayTransaction {
   customer_name: string;
   payment_reference: string;
   status: string;
+  gateway_fee?: number;
+  tax_on_fee?: number;
+  net_settlement?: number;
   normalized_amount: number;
   normalized_date: string;
   normalized_ref: string;
@@ -59,11 +62,19 @@ export interface AIInvestigation {
 export interface MatchRecord {
   match_id: string;
   run_id: string;
+  topology?: "ONE_TO_ONE" | "MANY_TO_ONE" | "ONE_TO_MANY" | "ORPHAN";
+  reason_code?: string | null;
   bank_txn_id: string | null;
   gateway_txn_id: string | null;
   invoice_id: string | null;
+  primary_amount?: number;
+  expected_amount?: number;
+  settled_amount?: number;
+  variance_amount?: number;
+  amounts_json?: string | null;
   decision: "MATCH" | "REVIEW" | "EXCEPTION" | "DUPLICATE" | "MISSING";
   confidence_score: number;
+  deterministic_confidence?: number;
   risk_level: "LOW" | "MEDIUM" | "HIGH";
   explanation: string;
   recommended_action: string;
@@ -76,6 +87,8 @@ export interface MatchRecord {
   composite_score: number;
   verified_by_ai: boolean;
   ai_verification_status?: string | null;
+  ai_confidence?: number | null;
+  ai_explanation?: string | null;
   ai_raw_response?: string | null;
   created_at: string;
   bank_transaction?: BankTransaction | null;
@@ -86,13 +99,26 @@ export interface MatchRecord {
 export interface TransactionDetail {
   match_id: string;
   decision: string;
+  topology?: string;
+  match_type?: string | null;
+  reason_code?: string | null;
   confidence_score: number;
+  deterministic_confidence?: number;
   risk_level: string;
   explanation: string;
   recommended_action: string;
   verified_by_ai: boolean;
   ai_verification_status?: string | null;
   ai_raw_response?: string | null;
+  amounts?: {
+    invoice_total?: number;
+    gateway_gross_total?: number;
+    gateway_fee_total?: number;
+    gateway_tax_total?: number;
+    gateway_net_total?: number;
+    bank_credit_total?: number;
+    variance?: number;
+  } | null;
   fee_classification?: string | null;
   fee_breakdown_json?: string | null;
   features: {
@@ -105,6 +131,9 @@ export interface TransactionDetail {
   bank_record?: BankTransaction | null;
   gateway_record?: GatewayTransaction | null;
   invoice_record?: Invoice | null;
+  bank_transactions?: BankTransaction[];
+  gateway_transactions?: GatewayTransaction[];
+  invoice_transactions?: Invoice[];
   exception_record?: {
     exception_id: string;
     type: string;
@@ -113,6 +142,12 @@ export interface TransactionDetail {
     amount_discrepancy: number;
     explanation: string;
     status: string;
+  } | null;
+  ai?: {
+    status?: string | null;
+    confidence?: number | null;
+    explanation?: string | null;
+    recommended_action?: string | null;
   } | null;
 }
 

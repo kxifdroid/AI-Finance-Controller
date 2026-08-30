@@ -2,6 +2,7 @@
 Transaction and Match Explorer API Routes.
 """
 
+import json
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -46,12 +47,19 @@ def list_transactions(
 
     if search:
         s = f"%{search.strip()}%"
-        query = query.filter(
+        query = query.outerjoin(Match.invoice).outerjoin(Match.gateway_transaction).outerjoin(Match.bank_transaction).filter(
             or_(
+                Match.match_id.ilike(s),
                 Match.bank_txn_id.ilike(s),
                 Match.gateway_txn_id.ilike(s),
                 Match.invoice_id.ilike(s),
                 Match.explanation.ilike(s),
+                Invoice.invoice_reference.ilike(s),
+                Invoice.customer_name.ilike(s),
+                GatewayTransaction.payment_reference.ilike(s),
+                GatewayTransaction.customer_name.ilike(s),
+                BankTransaction.reference.ilike(s),
+                BankTransaction.description.ilike(s),
             )
         )
 
@@ -87,12 +95,14 @@ def compute_match_features(match_record: Match, bank: Optional[Any], gw: Optiona
         }
 
     # 2. Extract numeric and string values
+    # NOTE: bank_amt stays None when there is genuinely no Bank record — it must
+    # never be silently coerced to 0.0, which would fabricate a variance.
     inv_amt = float(getattr(inv, "amount", 0.0) or 0.0)
     gw_amt = float(getattr(gw, "amount", 0.0) or 0.0)
     gw_fee = float(getattr(gw, "gateway_fee", 0.0) or 0.0)
     gw_tax = float(getattr(gw, "tax_on_fee", 0.0) or 0.0)
     gw_net = float(getattr(gw, "net_settlement", 0.0) or (gw_amt - gw_fee - gw_tax if gw_amt > 0 else 0.0))
-    bank_amt = float(getattr(bank, "amount", 0.0) or 0.0)
+    bank_amt = float(bank.amount) if bank is not None and getattr(bank, "amount", None) is not None else None
 
     # 3. AMOUNT SIMILARITY (3-Way)
     # Leg 1: Invoice vs Gateway
@@ -185,23 +195,53 @@ def get_transaction_detail(
         )
     ).first()
 
-    features = compute_match_features(match_record, bank, gw, inv)
+    # Query child transaction lists based on stored JSON arrays or scalar IDs
+    gw_ids = json.loads(match_record.gateway_txn_ids_json) if match_record.gateway_txn_ids_json else ([match_record.gateway_txn_id] if match_record.gateway_txn_id else [])
+    gw_records = db.query(GatewayTransaction).filter(GatewayTransaction.gateway_txn_id.in_(gw_ids)).all() if gw_ids else []
+    
+    inv_ids = json.loads(match_record.invoice_ids_json) if match_record.invoice_ids_json else ([match_record.invoice_id] if match_record.invoice_id else [])
+    inv_records = db.query(Invoice).filter(Invoice.invoice_id.in_(inv_ids)).all() if inv_ids else []
+
+    bank_ids = json.loads(match_record.bank_txn_ids_json) if match_record.bank_txn_ids_json else ([match_record.bank_txn_id] if match_record.bank_txn_id else [])
+    bank_records = db.query(BankTransaction).filter(BankTransaction.bank_txn_id.in_(bank_ids)).all() if bank_ids else []
+
+    primary_bank = bank_records[0] if bank_records else match_record.bank_transaction
+    primary_gw = gw_records[0] if gw_records else match_record.gateway_transaction
+    primary_inv = inv_records[0] if inv_records else match_record.invoice
+
+    amounts = json.loads(match_record.amounts_json) if match_record.amounts_json else None
+
+    features = {
+        "amount_similarity": match_record.amount_similarity,
+        "date_similarity": match_record.date_similarity,
+        "reference_similarity": match_record.reference_similarity,
+        "customer_similarity": match_record.customer_similarity,
+        "composite_score": match_record.composite_score,
+    }
 
     return TransactionDetailResponse(
         match_id=match_record.match_id,
         decision=match_record.decision,
+        topology=match_record.topology or "ONE_TO_ONE",
+        match_type=match_record.match_type,
+        reason_code=match_record.reason_code,
         confidence_score=match_record.confidence_score,
+        deterministic_confidence=match_record.deterministic_confidence,
         risk_level=match_record.risk_level,
         explanation=match_record.explanation,
         recommended_action=match_record.recommended_action,
         verified_by_ai=match_record.verified_by_ai,
         ai_raw_response=match_record.ai_raw_response,
+        amounts=amounts,
         fee_classification=match_record.fee_classification,
         fee_breakdown_json=match_record.fee_breakdown_json,
         features=features,
-        bank_record=BankTransactionResponse.model_validate(bank) if bank else None,
-        gateway_record=GatewayTransactionResponse.model_validate(gw) if gw else None,
-        invoice_record=InvoiceResponse.model_validate(inv) if inv else None,
+        bank_record=BankTransactionResponse.model_validate(primary_bank) if primary_bank else None,
+        gateway_record=GatewayTransactionResponse.model_validate(primary_gw) if primary_gw else None,
+        invoice_record=InvoiceResponse.model_validate(primary_inv) if primary_inv else None,
+        bank_transactions=[BankTransactionResponse.model_validate(b) for b in bank_records],
+        gateway_transactions=[GatewayTransactionResponse.model_validate(g) for g in gw_records],
+        invoice_transactions=[InvoiceResponse.model_validate(i) for i in inv_records],
         exception_record={
             "exception_id": exc_record.exception_id,
             "type": exc_record.exception_type,
@@ -211,4 +251,10 @@ def get_transaction_detail(
             "explanation": exc_record.explanation,
             "status": exc_record.status,
         } if exc_record else None,
+        ai={
+            "status": match_record.ai_verification_status,
+            "confidence": match_record.ai_confidence,
+            "explanation": match_record.ai_explanation,
+            "recommended_action": match_record.ai_recommended_action,
+        } if match_record.verified_by_ai else None,
     )

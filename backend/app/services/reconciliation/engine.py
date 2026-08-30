@@ -309,6 +309,22 @@ class ReconciliationEngine:
             "remaining_b": final_rem_b,
         }
 
+    def reconcile(
+        self,
+        db: Session,
+        use_ai: bool = False,
+        dataset_id: Optional[str] = None,
+        ground_truth_path: str = "data/ground_truth/ground_truth.json",
+    ) -> ReconciliationRun:
+        """Synchronous wrapper for run_reconciliation."""
+        import asyncio
+        return asyncio.run(self.run_reconciliation(
+            db=db,
+            use_ai=use_ai,
+            dataset_id=dataset_id,
+            ground_truth_path=ground_truth_path,
+        ))
+
     async def run_reconciliation(
         self,
         db: Session,
@@ -412,14 +428,21 @@ class ReconciliationEngine:
         leg2_res["matched_a_ids"].update(batch_gw_ids)
 
         # -------------------------------------------------------------
-        # Step 5: Assemble Chained 3-Way Match Records
+        # Step 5: Assemble Authoritative Chained Parent Reconciliation Records
         # -------------------------------------------------------------
+        from app.services.reconciliation.canonical_codes import CanonicalReasonCode
+        from app.services.reconciliation.explanation_builder import ExplanationBuilder
+
         matched_count = 0
         review_count = 0
         exception_count = 0
         matched_vol = 0.0
         review_vol = 0.0
         exception_vol = 0.0
+
+        consumed_bank_ids: Set[str] = set()
+        consumed_gw_ids: Set[str] = set()
+        consumed_inv_ids: Set[str] = set()
 
         # Build lookup for Leg 2 1-to-1 matches by gateway_txn_id
         gw_to_bank_match: Dict[str, Any] = {}
@@ -428,73 +451,194 @@ class ReconciliationEngine:
             if gw_id:
                 gw_to_bank_match[gw_id] = m
 
-        # Build lookup for batch settlement matches by gateway_txn_id
-        gw_to_batch_match: Dict[str, Any] = {}
+        # -------------------------------------------------------------
+        # Pass 1: Assemble Batch Settlements (MANY_TO_ONE) as Single Parent Records
+        # -------------------------------------------------------------
         for bm in batch_matches:
-            for g in bm["gateway_records"]:
-                gw_id = getattr(g, "gateway_txn_id", None)
-                if gw_id:
-                    gw_to_batch_match[gw_id] = bm
+            bank = bm["bank_record"]
+            gw_list = bm["gateway_records"]
+            bank_id = getattr(bank, "bank_txn_id", None)
+            gw_ids = [getattr(g, "gateway_txn_id") for g in gw_list if getattr(g, "gateway_txn_id")]
 
-        # Process Invoices matched in Leg 1 -> build 3-way chain
+            if not bank_id or bank_id in consumed_bank_ids:
+                continue
+
+            # Identify all invoices linked to these gateway transactions in Leg 1
+            inv_list = []
+            for m1 in leg1_res["matched_pairs"] + leg1_res["review_pairs"]:
+                m1_gw_id = getattr(m1["side_b"], "gateway_txn_id", None)
+                if m1_gw_id in gw_ids:
+                    inv_rec = m1["side_a"]
+                    inv_id = getattr(inv_rec, "invoice_id", None)
+                    if inv_id and inv_id not in consumed_inv_ids:
+                        inv_list.append(inv_rec)
+                        consumed_inv_ids.add(inv_id)
+
+            # If no invoice linked via Leg 1, search remaining unmatched invoices matching reference or batch amount
+            if not inv_list:
+                for inv_rec in invoice_records:
+                    inv_id = getattr(inv_rec, "invoice_id", None)
+                    if inv_id not in consumed_inv_ids:
+                        inv_ref = getattr(inv_rec, "invoice_reference", None)
+                        bank_ref = getattr(bank, "reference", None)
+                        inv_amt = float(getattr(inv_rec, "amount", 0.0))
+                        bank_amt = float(getattr(bank, "amount", 0.0))
+                        if (inv_ref and bank_ref and inv_ref == bank_ref) or abs(inv_amt - bank_amt) < 0.01:
+                            inv_list.append(inv_rec)
+                            consumed_inv_ids.add(inv_id)
+                            break
+
+            consumed_bank_ids.add(bank_id)
+            consumed_gw_ids.update(gw_ids)
+
+            bank_credit_total = float(getattr(bank, "amount", 0.0))
+            gw_gross_total = round(sum(float(getattr(g, "amount", 0.0)) for g in gw_list), 2)
+            gw_fee_total = round(sum(float(getattr(g, "gateway_fee", 0.0) or 0.0) for g in gw_list), 2)
+            gw_tax_total = round(sum(float(getattr(g, "tax_on_fee", 0.0) or 0.0) for g in gw_list), 2)
+            gw_net_total = round(sum(float(getattr(g, "net_settlement", None) or getattr(g, "net_amount", None) or getattr(g, "amount", 0.0)) for g in gw_list), 2)
+            inv_total = round(sum(float(getattr(i, "amount", 0.0)) for i in inv_list), 2) if inv_list else bank_credit_total
+            variance = round(bank_credit_total - gw_net_total, 2)
+
+            if abs(variance) < 0.01:
+                decision = "MATCH"
+                match_type = "MANY_TO_ONE"
+                reason_code = CanonicalReasonCode.MANY_TO_ONE_MATCH
+                risk_level = "LOW"
+                confidence = 1.0
+            else:
+                decision = "REVIEW"
+                match_type = "MANY_TO_ONE"
+                reason_code = CanonicalReasonCode.AMOUNT_MISMATCH
+                risk_level = "MEDIUM"
+                confidence = 0.85
+
+            amounts_dict = {
+                "invoice_total": inv_total,
+                "gateway_gross_total": gw_gross_total,
+                "gateway_fee_total": gw_fee_total,
+                "gateway_tax_total": gw_tax_total,
+                "gateway_net_total": gw_net_total,
+                "bank_credit_total": bank_credit_total,
+                "variance": variance,
+            }
+
+            exp_data = ExplanationBuilder.build_explanation_and_action(
+                decision=decision,
+                reason_code=reason_code,
+                amounts=amounts_dict,
+                context={
+                    "gateway_count": len(gw_list),
+                    "reference": getattr(bank, "reference", getattr(gw_list[0], "payment_reference", "")),
+                    "bank_date": str(getattr(bank, "transaction_date", "")),
+                },
+            )
+
+            match_id = f"M_{uuid.uuid4().hex[:10].upper()}"
+            match_record = Match(
+                match_id=match_id,
+                run_id=run_id,
+                topology="MANY_TO_ONE",
+                reason_code=reason_code,
+                bank_txn_id=bank_id,
+                gateway_txn_id=gw_ids[0] if gw_ids else None,
+                invoice_id=getattr(inv_list[0], "invoice_id", None) if inv_list else None,
+                bank_txn_ids_json=json.dumps([bank_id]),
+                gateway_txn_ids_json=json.dumps(gw_ids),
+                invoice_ids_json=json.dumps([getattr(i, "invoice_id") for i in inv_list]),
+                amounts_json=json.dumps(amounts_dict),
+                primary_amount=bank_credit_total,
+                expected_amount=gw_net_total,
+                settled_amount=bank_credit_total,
+                variance_amount=variance,
+                decision=decision,
+                confidence_score=round(confidence, 4),
+                deterministic_confidence=round(confidence, 4),
+                risk_level=risk_level,
+                explanation=exp_data["explanation"],
+                recommended_action=exp_data["recommended_action"],
+                match_type=match_type,
+                evidence_json=bm.get("evidence_json"),
+                amount_similarity=1.0 if abs(variance) < 0.01 else 0.85,
+                date_similarity=1.0,
+                reference_similarity=1.0,
+                customer_similarity=1.0,
+                composite_score=round(confidence, 4),
+                verified_by_ai=False,
+                ai_verification_status="NOT_REQUIRED",
+            )
+            db.add(match_record)
+
+            AuditService.log(
+                db=db,
+                entity_type="match",
+                entity_id=match_id,
+                action="auto_matched" if decision == "MATCH" else "classified",
+                rule_or_reason=reason_code,
+                actor="system",
+                after_status=decision.lower(),
+            )
+
+            if decision == "MATCH":
+                matched_count += 1
+                matched_vol += bank_credit_total
+            else:
+                review_count += 1
+                review_vol += bank_credit_total
+
+        # -------------------------------------------------------------
+        # Pass 2: Assemble 1-to-1 Matches from Leg 1 Pairs
+        # -------------------------------------------------------------
         for m1 in leg1_res["matched_pairs"] + leg1_res["review_pairs"]:
             inv = m1["side_a"]
             gw = m1["side_b"]
             gw_id = getattr(gw, "gateway_txn_id", None)
+            inv_id = getattr(inv, "invoice_id", None)
+
+            if not gw_id or gw_id in consumed_gw_ids or (inv_id and inv_id in consumed_inv_ids):
+                continue
 
             m2 = gw_to_bank_match.get(gw_id)
-            bm = gw_to_batch_match.get(gw_id)
+            bank = m2["side_b"] if m2 else None
+            bank_id = getattr(bank, "bank_txn_id", None) if bank else None
 
-            bank = None
-            m2_explanation = ""
-            m2_rule = ""
-            m2_evidence = None
+            if bank_id and bank_id in consumed_bank_ids:
+                bank = None
+                bank_id = None
+                m2 = None
 
-            if m2:
-                bank = m2["side_b"]
-                m2_explanation = m2["explanation"]
-                m2_rule = m2.get("match_rule", "leg2_matched")
-                m2_evidence = m2.get("evidence_json")
-            elif bm:
-                bank = bm["bank_record"]
-                m2_explanation = bm["explanation"]
-                m2_rule = bm.get("match_rule", "batch_settlement")
-                m2_evidence = bm.get("evidence_json")
+            consumed_gw_ids.add(gw_id)
+            if inv_id:
+                consumed_inv_ids.add(inv_id)
+            if bank_id:
+                consumed_bank_ids.add(bank_id)
 
-            decision = m1["decision"]
-            if (m2 and m2["decision"] == "REVIEW") or bm:
-                decision = "REVIEW"
-
-            m1_conf = float(m1.get("confidence", 1.0))
-            m2_conf = float(m2.get("confidence", 0.95)) if m2 else (0.95 if bm else 0.5)
-            confidence = min(m1_conf, m2_conf)
-            max_amt = max(abs(float(getattr(inv, "amount", 0.0))), abs(float(getattr(gw, "amount", 0.0))))
-
-            match_id = f"M_{uuid.uuid4().hex[:10].upper()}"
-
-            # ------------------------------------------------------------------
-            # Fee-aware 3-way classification
-            # When the gateway charged a fee, expected bank credit = gross - fee - tax.
-            # This is a deterministic calculation — the LLM is never involved.
-            # ------------------------------------------------------------------
-            fee_classification = None
-            fee_breakdown_json = None
+            inv_amt = float(getattr(inv, "amount", 0.0))
+            gw_gross = float(getattr(gw, "amount", 0.0))
             gw_fee = float(getattr(gw, "gateway_fee", 0.0) or 0.0)
             gw_tax = float(getattr(gw, "tax_on_fee", 0.0) or 0.0)
-            gw_gross = float(getattr(gw, "amount", 0.0) or 0.0)
-            inv_amt = float(getattr(inv, "amount", 0.0) or 0.0)
+            gw_net = gw_gross - gw_fee - gw_tax if gw_fee > 0 else gw_gross
             bank_credit = float(getattr(bank, "amount", 0.0) if bank else 0.0)
-            fee_pct = 0.0
+            variance = round(bank_credit - gw_net if bank else gw_gross, 2)
 
+            # Compute features
+            amt_sim = self.scorer.calculate_3way_amount_similarity(inv_amt, gw_gross, gw_fee, gw_tax, bank_credit if bank else None)
+            gw_date = getattr(gw, 'transaction_date', None)
+            bank_date = getattr(bank, 'transaction_date', None) if bank else None
+            date_sim = self.scorer.calculate_date_similarity(gw_date, bank_date) if (gw_date and bank_date) else (0.50 if not bank else 1.0)
+            ref_sim = self.scorer.calculate_reference_similarity(getattr(inv, 'invoice_reference', ''), getattr(gw, 'payment_reference', ''))
+            cust_sim = self.scorer.calculate_customer_similarity(getattr(inv, 'customer_name', ''), getattr(gw, 'customer_name', ''))
+            computed = self.scorer.compute_match_score(amt_sim, date_sim, ref_sim, cust_sim)
+            confidence = computed["score"]
+
+            fee_classification = None
+            fee_breakdown_json = None
             if bank and gw_fee > 0:
-                from app.services.reconciliation.fee_calculator import FeeCalculator
-                is_valid, fee_pct_val, variance, fee_cls = FeeCalculator.validate_fee_variance(
+                is_valid, fee_pct_val, fee_var, fee_cls = FeeCalculator.validate_fee_variance(
                     gross_amount=gw_gross,
                     actual_bank_credit=bank_credit,
                     fee_amount=gw_fee,
                     tax_amount=gw_tax,
                 )
-                fee_pct = fee_pct_val
                 fee_classification = fee_cls
                 expected_net = FeeCalculator.calculate_fee_settlement(gw_gross, gw_fee, gw_tax)
                 fee_breakdown_json = json.dumps({
@@ -504,178 +648,135 @@ class ReconciliationEngine:
                     "expected_net_settlement": round(expected_net, 2),
                     "actual_bank_credit": round(bank_credit, 2),
                     "variance": round(variance, 2),
-                    "fee_pct": round(fee_pct * 100, 4),
+                    "fee_pct": round(fee_pct_val * 100, 4),
                     "classification": fee_cls,
                 })
 
-            # Check if Leg 1 had underpayment / fuzzy review
-            is_leg1_review = (m1.get("decision") == "REVIEW") or (abs(inv_amt - gw_gross) >= 0.01)
-
-            # Determine match_type, decision, and risk_level cleanly
-            if bm:
-                match_type = "MANY_TO_ONE"
+            # Authoritative Final Classification Pass
+            if not bank:
                 decision = "REVIEW"
-                risk_level = "LOW"
-            elif is_leg1_review:
-                match_type = "FUZZY"
-                decision = "REVIEW"
-                risk_level = "MEDIUM"
-            elif fee_classification == "FEE_RECONCILED":
-                match_type = "FEE_RECONCILED"
-                decision = "MATCH"
-                risk_level = "LOW"
-            elif m2 and m2.get("match_type") == "TIMING_DIFFERENCE":
-                match_type = "TIMING_DIFFERENCE"
-                decision = "MATCH"
-                risk_level = "LOW"
-            elif not m2 and not bm:
                 match_type = "MISSING_BANK_SETTLEMENT"
-                decision = "REVIEW"
+                reason_code = CanonicalReasonCode.MISSING_BANK_SETTLEMENT
                 risk_level = "HIGH"
-            elif m1.get("match_type") == "EXACT" and m2 and m2.get("match_type") == "EXACT":
-                match_type = "EXACT"
-                decision = "MATCH"
-                risk_level = "LOW"
+                confidence = 0.50
+            elif gw_fee > 0:
+                if fee_classification == "FEE_RECONCILED" and abs(inv_amt - gw_gross) < 0.01:
+                    decision = "MATCH"
+                    match_type = "FEE_RECONCILED"
+                    reason_code = CanonicalReasonCode.FEE_RECONCILED
+                    risk_level = "LOW"
+                    confidence = 1.0
+                elif abs(inv_amt - gw_gross) >= 0.01:
+                    decision = "REVIEW"
+                    match_type = "AMOUNT_MISMATCH"
+                    reason_code = CanonicalReasonCode.AMOUNT_MISMATCH
+                    risk_level = "MEDIUM"
+                    confidence = round(amt_sim * 0.40 + 0.60, 4)
+                else:
+                    decision = "REVIEW"
+                    match_type = "FEE_VARIANCE"
+                    reason_code = CanonicalReasonCode.FEE_VARIANCE
+                    risk_level = "HIGH"
+                    confidence = 0.70
             else:
-                match_type = m1.get("match_type", "FUZZY")
-                decision = "MATCH" if (m1.get("decision") == "MATCH" and (not m2 or m2.get("decision") == "MATCH")) else "REVIEW"
-                risk_level = "LOW" if decision == "MATCH" else "MEDIUM"
+                diff_inv_gw = abs(inv_amt - gw_gross)
+                diff_gw_bank = abs(gw_gross - bank_credit)
+                if diff_inv_gw < 0.01 and diff_gw_bank < 0.01:
+                    if m2 and m2.get("match_type") == "TIMING_DIFFERENCE":
+                        decision = "MATCH"
+                        match_type = "TIMING_DIFFERENCE"
+                        reason_code = CanonicalReasonCode.TIMING_DIFFERENCE
+                        risk_level = "LOW"
+                        confidence = float(m2.get("confidence", 0.98))
+                    else:
+                        decision = "MATCH"
+                        match_type = "EXACT"
+                        reason_code = CanonicalReasonCode.EXACT_3_WAY_MATCH
+                        risk_level = "LOW"
+                        confidence = 1.0
+                else:
+                    # Amount Mismatch across 3-way records
+                    decision = "REVIEW"
+                    match_type = "AMOUNT_MISMATCH"
+                    reason_code = CanonicalReasonCode.AMOUNT_MISMATCH
+                    risk_level = "MEDIUM"
+                    confidence = round(computed["score"], 4)
 
-            # Plain English Soothing Auditor Explanation
-            ref_code = getattr(gw, "payment_reference", getattr(inv, "invoice_reference", getattr(bank, "reference", "")))
-            cust_name = getattr(inv, "customer_name", getattr(gw, "customer_name", "Customer"))
-            inv_id_str = getattr(inv, "invoice_id", "")
-            gw_id_str = getattr(gw, "gateway_txn_id", "")
+            amounts_dict = {
+                "invoice_total": inv_amt,
+                "gateway_gross_total": gw_gross,
+                "gateway_fee_total": gw_fee,
+                "gateway_tax_total": gw_tax,
+                "gateway_net_total": gw_net,
+                "bank_credit_total": bank_credit,
+                "variance": variance,
+            }
 
-            if bm:
-                soothing_exp = (
-                    f"Batch payout reconciled: Bank deposit of ₹{bank_credit:,.2f} ({getattr(bank, 'description', getattr(bank, 'reference', ''))}) "
-                    f"successfully aggregates {len(bm['gateway_records'])} gateway captures (including {ref_code} for ₹{gw_gross:,.2f})."
-                )
-                action_text = "Batch deposit verified against aggregate gateway captures."
-            elif is_leg1_review and fee_classification == "FEE_RECONCILED":
-                underpay_delta = round(abs(inv_amt - gw_gross), 2)
-                soothing_exp = (
-                    f"Partial match with customer underpayment: Leg 1 does not match fully — Invoice {inv_id_str} billed ₹{inv_amt:,.2f}, "
-                    f"but Gateway {gw_id_str} captured only ₹{gw_gross:,.2f} (underpayment delta: ₹{underpay_delta:,.2f}, match confidence: {int(confidence * 100)}%). "
-                    f"Leg 2 matches cleanly — Gateway collected ₹{gw_gross:,.2f} gross, deducted standard Razorpay fee of ₹{gw_fee:,.2f} ({fee_pct * 100:.2f}%) "
-                    f"+ GST of ₹{gw_tax:,.2f} (18%), and Bank credited ₹{bank_credit:,.2f} net settlement with zero unexplained variance."
-                )
-                action_text = f"Follow up with {cust_name} for remaining ₹{underpay_delta:,.2f} invoice balance or issue a credit adjustment note."
-            elif is_leg1_review:
-                underpay_delta = round(abs(inv_amt - gw_gross), 2)
-                soothing_exp = (
-                    f"Underpayment variance detected: Invoice {inv_id_str} billed ₹{inv_amt:,.2f}, but Gateway {gw_id_str} captured ₹{gw_gross:,.2f} "
-                    f"(variance delta: ₹{underpay_delta:,.2f}, match confidence: {int(confidence * 100)}%). "
-                    + (m2_explanation if m2 else "[Leg 2] Bank settlement pending.")
-                )
-                action_text = f"Operator review required: Request balance payment of ₹{underpay_delta:,.2f} from {cust_name}."
-            elif fee_classification == "FEE_RECONCILED":
-                soothing_exp = (
-                    f"Reconciled with standard Razorpay MDR fee deduction ({fee_pct * 100:.2f}% fee + 18% GST). "
-                    f"Invoiced ₹{inv_amt:,.2f} gross; Bank received ₹{bank_credit:,.2f} net settlement with zero unexplained variance."
-                )
-                action_text = "No action required. Fee and GST deductions conform to standard fee schedule."
-            elif m2 and m2.get("match_type") == "TIMING_DIFFERENCE":
-                gw_d = getattr(gw, "transaction_date", date.today())
-                bk_d = getattr(bank, "transaction_date", date.today())
-                d_days = abs((bk_d - gw_d).days)
-                soothing_exp = (
-                    f"Reconciled across all systems with a {d_days}-day banking clearing delay "
-                    f"(captured {gw_d}, credited {bk_d}). Reference '{ref_code}' and amount (₹{gw_gross:,.2f}) match exactly."
-                )
-                action_text = f"Settlement verified within permissible T+{d_days} bank clearing window."
-            elif m2 and m1.get("match_type") == "EXACT":
-                soothing_exp = (
-                    f"Fully reconciled across ERP Invoice, Payment Gateway, and Bank Statement. "
-                    f"Reference '{ref_code}', exact amount (₹{gw_gross:,.2f}), and same-day settlement date match identically."
-                )
-                action_text = "No action required. Transaction verified and reconciled."
-            elif not m2 and not bm:
-                soothing_exp = (
-                    f"Payment captured via Gateway for ₹{gw_gross:,.2f} on {getattr(gw, 'transaction_date', '')}, "
-                    f"but corresponding bank deposit has not been received (exceeds standard T+2 settlement window)."
-                )
-                action_text = "Trace bank settlement UTR with payment aggregator."
-            else:
-                soothing_exp = f"{m1['explanation']} " + (m2_explanation if m2 else "[Leg 2] Bank settlement pending.")
-                action_text = "Reconciliation complete." if decision == "MATCH" else "Operator review required."
+            gw_d_str = str(getattr(gw, "transaction_date", ""))
+            bk_d_str = str(getattr(bank, "transaction_date", "")) if bank else ""
+            delta_days = abs((getattr(bank, "transaction_date", date.today()) - getattr(gw, "transaction_date", date.today())).days) if bank else 0
 
-            # Combined structured evidence
-            combined_evidence = m1.get("evidence_json") or EvidenceBuilder.build_match_evidence(
-                match_type=match_type,
-                rule=m1.get("match_rule", "chained_reconciliation"),
-                confidence=confidence,
-                amounts={"invoice_amount": float(getattr(inv, "amount", 0.0)), "gateway_amount": float(getattr(gw, "amount", 0.0))},
+            exp_data = ExplanationBuilder.build_explanation_and_action(
+                decision=decision,
+                reason_code=reason_code,
+                amounts=amounts_dict,
+                context={
+                    "reference": getattr(gw, "payment_reference", getattr(inv, "invoice_reference", "")),
+                    "customer": getattr(inv, "customer_name", getattr(gw, "customer_name", "Customer")),
+                    "gateway_date": gw_d_str,
+                    "bank_date": bk_d_str,
+                    "delta_days": delta_days,
+                },
             )
 
-            # Extract real similarity feature metrics from Leg 1 and Leg 2
-            m1_features = m1.get("features") or {
-                "amount_similarity": 1.0 if m1.get("match_type") == "EXACT" else round(m1_conf, 4),
-                "date_similarity": 1.0,
-                "reference_similarity": 1.0,
-                "customer_similarity": 1.0,
-            }
-            if m2:
-                m2_features = m2.get("features") or {
-                    "amount_similarity": 1.0 if m2.get("match_type") == "EXACT" else 1.0,
-                    "date_similarity": 1.0,
-                    "reference_similarity": 1.0,
-                    "customer_similarity": 1.0,
-                }
-            else:
-                # Missing Leg 2 (no bank settlement): penalize the 3-way score.
-                # Amount cleared is ₹0 vs expected -> amount similarity 0.0;
-                # settlement date is pending -> date similarity 0.50.
-                m2_features = {
-                    "amount_similarity": 0.0,
-                    "date_similarity": 0.50,
-                    "reference_similarity": 1.0,
-                    "customer_similarity": 1.0,
-                }
-
-            match_amt_sim = round(min(float(m1_features.get("amount_similarity", 1.0)), float(m2_features.get("amount_similarity", 0.0))), 4)
-            match_date_sim = round(min(float(m1_features.get("date_similarity", 1.0)), float(m2_features.get("date_similarity", 0.50))), 4)
-            match_ref_sim = round(min(float(m1_features.get("reference_similarity", 1.0)), float(m2_features.get("reference_similarity", 1.0))), 4)
-            match_cust_sim = round(min(float(m1_features.get("customer_similarity", 1.0)), float(m2_features.get("customer_similarity", 1.0))), 4)
-
+            match_id = f"M_{uuid.uuid4().hex[:10].upper()}"
             match_record = Match(
                 match_id=match_id,
                 run_id=run_id,
-                bank_txn_id=getattr(bank, "bank_txn_id", None),
+                topology="ONE_TO_ONE",
+                reason_code=reason_code,
+                bank_txn_id=bank_id,
                 gateway_txn_id=gw_id,
-                invoice_id=getattr(inv, "invoice_id", None),
+                invoice_id=inv_id,
+                bank_txn_ids_json=json.dumps([bank_id] if bank_id else []),
+                gateway_txn_ids_json=json.dumps([gw_id] if gw_id else []),
+                invoice_ids_json=json.dumps([inv_id] if inv_id else []),
+                amounts_json=json.dumps(amounts_dict),
+                primary_amount=gw_gross or inv_amt,
+                expected_amount=gw_net,
+                settled_amount=bank_credit,
+                variance_amount=variance,
                 decision=decision,
                 confidence_score=round(confidence, 4),
+                deterministic_confidence=round(confidence, 4),
                 risk_level=risk_level,
-                explanation=soothing_exp,
-                recommended_action=action_text,
+                explanation=exp_data["explanation"],
+                recommended_action=exp_data["recommended_action"],
                 match_type=match_type,
-                evidence_json=combined_evidence,
+                evidence_json=m1.get("evidence_json"),
                 fee_classification=fee_classification,
                 fee_breakdown_json=fee_breakdown_json,
-                amount_similarity=match_amt_sim,
-                date_similarity=match_date_sim,
-                reference_similarity=match_ref_sim,
-                customer_similarity=match_cust_sim,
+                amount_similarity=round(amt_sim, 4),
+                date_similarity=round(date_sim, 4),
+                reference_similarity=round(ref_sim, 4),
+                customer_similarity=round(cust_sim, 4),
                 composite_score=round(confidence, 4),
                 verified_by_ai=False,
                 ai_verification_status="NOT_REQUIRED",
             )
             db.add(match_record)
 
-            # Structured Audit Log
             AuditService.log(
                 db=db,
                 entity_type="match",
                 entity_id=match_id,
                 action="auto_matched" if decision == "MATCH" else "classified",
-                rule_or_reason=m1.get("match_rule", "chained_reconciliation"),
+                rule_or_reason=reason_code,
                 actor="system",
-                before_status=None,
                 after_status=decision.lower(),
             )
 
+            max_amt = max(inv_amt, gw_gross)
             if decision == "MATCH":
                 matched_count += 1
                 matched_vol += max_amt
@@ -683,48 +784,86 @@ class ReconciliationEngine:
                 review_count += 1
                 review_vol += max_amt
 
-        # Process Batch Settlement matches not already linked to an Invoice
-        for bm in batch_matches:
-            bank = bm["bank_record"]
+        # -------------------------------------------------------------
+        # Pass 3: Assemble Leg 2 Pairs where Gateway had no Invoice counterpart
+        # -------------------------------------------------------------
+        for m2 in leg2_res["matched_pairs"] + leg2_res["review_pairs"]:
+            gw = m2["side_a"]
+            bank = m2["side_b"]
+            gw_id = getattr(gw, "gateway_txn_id", None)
             bank_id = getattr(bank, "bank_txn_id", None)
-            for gw in bm["gateway_records"]:
-                gw_id = getattr(gw, "gateway_txn_id", None)
-                if gw_id and gw_id not in leg1_res["matched_b_ids"]:
-                    match_id = f"M_{uuid.uuid4().hex[:10].upper()}"
-                    gw_amt = float(getattr(gw, "amount", 0.0))
-                    match_record = Match(
-                        match_id=match_id,
-                        run_id=run_id,
-                        bank_txn_id=bank_id,
-                        gateway_txn_id=gw_id,
-                        invoice_id=None,
-                        decision="REVIEW",
-                        confidence_score=0.95,
-                        risk_level="LOW",
-                        explanation=bm["explanation"],
-                        recommended_action="Approve batch settlement payout aggregation.",
-                        match_type="MANY_TO_ONE",
-                        evidence_json=bm.get("evidence_json"),
-                        amount_similarity=1.0,
-                        date_similarity=1.0,
-                        reference_similarity=1.0,
-                        customer_similarity=1.0,
-                        composite_score=0.95,
-                        verified_by_ai=False,
-                        ai_verification_status="NOT_REQUIRED",
-                    )
-                    db.add(match_record)
-                    AuditService.log(
-                        db=db,
-                        entity_type="match",
-                        entity_id=match_id,
-                        action="classified",
-                        rule_or_reason="batch_settlement_sum_equality",
-                        actor="system",
-                        after_status="review",
-                    )
-                    review_count += 1
-                    review_vol += gw_amt
+
+            if not gw_id or gw_id in consumed_gw_ids or not bank_id or bank_id in consumed_bank_ids:
+                continue
+
+            consumed_gw_ids.add(gw_id)
+            consumed_bank_ids.add(bank_id)
+
+            gw_gross = float(getattr(gw, "amount", 0.0))
+            bank_credit = float(getattr(bank, "amount", 0.0))
+            variance = round(bank_credit - gw_gross, 2)
+
+            amounts_dict = {
+                "invoice_total": 0.0,
+                "gateway_gross_total": gw_gross,
+                "gateway_fee_total": 0.0,
+                "gateway_tax_total": 0.0,
+                "gateway_net_total": gw_gross,
+                "bank_credit_total": bank_credit,
+                "variance": variance,
+            }
+
+            reason_code = CanonicalReasonCode.MISSING_INVOICE
+            decision = "REVIEW"
+            confidence = 0.65
+            risk_level = "MEDIUM"
+
+            exp_data = ExplanationBuilder.build_explanation_and_action(
+                decision=decision,
+                reason_code=reason_code,
+                amounts=amounts_dict,
+                context={
+                    "reference": getattr(gw, "payment_reference", ""),
+                    "customer": getattr(gw, "customer_name", "Customer"),
+                },
+            )
+
+            match_id = f"M_{uuid.uuid4().hex[:10].upper()}"
+            match_record = Match(
+                match_id=match_id,
+                run_id=run_id,
+                topology="ONE_TO_ONE",
+                reason_code=reason_code,
+                bank_txn_id=bank_id,
+                gateway_txn_id=gw_id,
+                invoice_id=None,
+                bank_txn_ids_json=json.dumps([bank_id]),
+                gateway_txn_ids_json=json.dumps([gw_id]),
+                invoice_ids_json=json.dumps([]),
+                amounts_json=json.dumps(amounts_dict),
+                primary_amount=gw_gross,
+                expected_amount=gw_gross,
+                settled_amount=bank_credit,
+                variance_amount=variance,
+                decision=decision,
+                confidence_score=round(confidence, 4),
+                deterministic_confidence=round(confidence, 4),
+                risk_level=risk_level,
+                explanation=exp_data["explanation"],
+                recommended_action=exp_data["recommended_action"],
+                match_type="MISSING_INVOICE",
+                evidence_json=m2.get("evidence_json"),
+                amount_similarity=1.0 if abs(variance) < 0.01 else 0.50,
+                date_similarity=1.0,
+                reference_similarity=1.0,
+                customer_similarity=1.0,
+                composite_score=round(confidence, 4),
+                verified_by_ai=False,
+                ai_verification_status="NOT_REQUIRED",
+            )
+            db.add(match_record)
+            review_count += 1
+            review_vol += gw_gross
 
         # -------------------------------------------------------------
         # Step 6: Classify Unmatched Records into Expanded Taxonomy

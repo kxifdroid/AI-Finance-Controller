@@ -11,9 +11,13 @@ def test_amount_similarity():
     # Exact match
     assert scorer.calculate_amount_similarity(10000.0, 10000.0) == 1.0
     
-    # 2.5% fee discrepancy (e.g. 9,750 vs 10,000) falls within 5% fee tolerance -> 1.0
-    fee_sim = scorer.calculate_amount_similarity(9750.0, 10000.0)
+    # 2.5% fee discrepancy with fee tolerance flag enabled -> 1.0
+    fee_sim = scorer.calculate_amount_similarity(9750.0, 10000.0, allow_fee_variance=True)
     assert fee_sim == 1.0
+
+    # 2.5% fee discrepancy without fee flag enabled -> exponential decay
+    decay_sim = scorer.calculate_amount_similarity(9750.0, 10000.0, allow_fee_variance=False)
+    assert 0.70 < decay_sim < 0.85
 
     # 10% discrepancy (beyond 5% tolerance window) -> decays
     diff_sim = scorer.calculate_amount_similarity(9000.0, 10000.0)

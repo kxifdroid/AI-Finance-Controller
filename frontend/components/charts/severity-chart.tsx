@@ -12,10 +12,25 @@ const SEVERITY_COLORS: Record<string, string> = {
   LOW: "#3b82f6",
 };
 
+const CustomSeverityTooltip = ({ active, payload }: any) => {
+  if (active && payload && payload.length) {
+    const item = payload[0];
+    return (
+      <div className="rounded-lg border border-border bg-surface p-2.5 shadow-xl text-xs space-y-0.5">
+        <p className="font-semibold text-content">{item.name}</p>
+        <p className="text-content-secondary tabular-nums">
+          <span className="font-bold text-content">{item.value}</span> discrepancies
+        </p>
+      </div>
+    );
+  }
+  return null;
+};
+
 export function SeverityChart({ data }: SeverityChartProps) {
   if (!data || data.length === 0 || data.every((d) => d.count === 0)) {
     return (
-      <div className="flex h-64 items-center justify-center text-xs text-gray-500">
+      <div className="flex h-64 items-center justify-center text-xs text-content-muted">
         No severity data available.
       </div>
     );
@@ -43,19 +58,10 @@ export function SeverityChart({ data }: SeverityChartProps) {
             labelLine={false}
           >
             {chartData.map((entry, index) => (
-              <Cell key={`cell-${index}`} fill={entry.color} stroke="#111827" strokeWidth={2} />
+              <Cell key={`cell-${index}`} fill={entry.color} stroke="var(--bg-surface)" strokeWidth={2} />
             ))}
           </Pie>
-          <Tooltip
-            contentStyle={{
-              backgroundColor: "#111827",
-              borderColor: "#374151",
-              borderRadius: "0.5rem",
-              fontSize: "12px",
-              color: "#fff",
-            }}
-            formatter={(val: number) => [`${val} items`, "Severity Count"]}
-          />
+          <Tooltip content={<CustomSeverityTooltip />} />
         </PieChart>
       </ResponsiveContainer>
     </div>

@@ -40,23 +40,28 @@ class ForecastingService:
             return q
 
         # 1. Calculate Cleared Cash (Bank Transactions: Credits - Debits)
-        credits_q = db.query(func.coalesce(func.sum(BankTransaction.amount), 0.0)).filter(BankTransaction.transaction_type == "CREDIT")
+        # Be permissive: treat positive amount as credit if no explicit transaction_type or credit/debit columns
+        credits_q = db.query(func.coalesce(func.sum(BankTransaction.amount), 0.0)).filter(
+            (BankTransaction.transaction_type == "CREDIT") |
+            ((BankTransaction.transaction_type.is_(None)) & (BankTransaction.amount > 0))
+        )
         debits_q = db.query(func.coalesce(func.sum(BankTransaction.amount), 0.0)).filter(BankTransaction.transaction_type == "DEBIT")
-        
+
         credits = apply_filter(credits_q, BankTransaction).scalar() or 0.0
         debits = apply_filter(debits_q, BankTransaction).scalar() or 0.0
-        
-        cleared_cash = round(credits - debits, 2)
-        if cleared_cash <= 0:
-            # Baseline operating float if newly loaded
-            cleared_cash = round(credits * 0.8, 2) or 500000.0
 
-        # 2. Expected Gateway Settlements (Captured gateway payments settling within T+2)
-        gw_q = db.query(func.coalesce(func.sum(GatewayTransaction.amount), 0.0)).filter(GatewayTransaction.status == "CAPTURED")
+        cleared_cash = round(credits - debits, 2)
+
+        # 2. Expected Gateway Settlements (use all gateway net settlements for the dataset;
+        #    relax status filter so forecast generates numbers even if status column is missing or varies)
+        gw_q = db.query(func.coalesce(func.sum(GatewayTransaction.net_settlement), 0.0))
         gateway_inflow = apply_filter(gw_q, GatewayTransaction).scalar() or 0.0
 
         # 3. Expected Receivables (Open/Issued Invoices)
-        inv_q = db.query(func.coalesce(func.sum(Invoice.amount), 0.0)).filter(Invoice.status.in_(["ISSUED", "PARTIALLY_PAID"]))
+        inv_q = db.query(func.coalesce(func.sum(Invoice.amount), 0.0)).filter(
+            Invoice.status.in_(["ISSUED", "PARTIALLY_PAID", "OPEN", "PENDING", "UNPAID"]) |
+            (Invoice.status.is_(None))
+        )
         open_receivables = apply_filter(inv_q, Invoice).scalar() or 0.0
 
         # 4. Disputed / Exception exposure

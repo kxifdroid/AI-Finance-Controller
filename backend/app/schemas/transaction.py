@@ -74,12 +74,19 @@ class TransactionDetailResponse(BaseModel):
     """3-Way side-by-side transaction detail view."""
     match_id: str
     decision: str
+    topology: str = "ONE_TO_ONE"
+    match_type: Optional[str] = None
+    reason_code: Optional[str] = None
     confidence_score: float
+    deterministic_confidence: float = 1.0
     risk_level: str
     explanation: str
     recommended_action: str
     verified_by_ai: bool = False
     ai_raw_response: Optional[str] = None
+
+    # Amounts decomposition
+    amounts: Optional[Dict[str, float]] = None
 
     # Fee-aware reconciliation fields
     fee_classification: Optional[str] = None
@@ -87,7 +94,16 @@ class TransactionDetailResponse(BaseModel):
 
     features: Dict[str, float]
     
+    # 1-to-1 legacy cards
     bank_record: Optional[BankTransactionResponse] = None
     gateway_record: Optional[GatewayTransactionResponse] = None
     invoice_record: Optional[InvoiceResponse] = None
+    
+    # Parent/Child expanded transaction lists
+    bank_transactions: List[BankTransactionResponse] = []
+    gateway_transactions: List[GatewayTransactionResponse] = []
+    invoice_transactions: List[InvoiceResponse] = []
+
     exception_record: Optional[Dict[str, Any]] = None
+
+    ai: Optional[Dict[str, Any]] = None
