@@ -3,9 +3,10 @@ Configuration settings for AI Finance Controller.
 Uses pydantic-settings to load environment variables with sane defaults.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Union
+import json
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -16,12 +17,28 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     
     # CORS
-    CORS_ORIGINS: List[str] = [
+    CORS_ORIGINS: Union[List[str], str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]
+
+    @field_validator("CORS_ORIGINS", mode="after")
+    @classmethod
+    def parse_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            v_stripped = v.strip()
+            if v_stripped.startswith("[") and v_stripped.endswith("]"):
+                try:
+                    parsed = json.loads(v_stripped)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed]
+                except Exception:
+                    pass
+            # Split comma separated origins or single item
+            return [origin.strip() for origin in v_stripped.split(",") if origin.strip()]
+        return [str(x).strip() for x in v]
 
     # Database
     DATABASE_URL: str = "sqlite:///./finance_controller.db"
