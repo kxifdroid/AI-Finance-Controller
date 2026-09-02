@@ -20,6 +20,7 @@ Architecture:
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -658,7 +659,10 @@ class ReconciliationEngine:
                 match_type = "MISSING_BANK_SETTLEMENT"
                 reason_code = CanonicalReasonCode.MISSING_BANK_SETTLEMENT
                 risk_level = "HIGH"
-                confidence = 0.50
+                amt_sim = 0.0
+                date_sim = 0.50
+                computed = self.scorer.compute_match_score(amt_sim, date_sim, ref_sim, cust_sim)
+                confidence = round(computed["score"], 4)
             elif gw_fee > 0:
                 if fee_classification == "FEE_RECONCILED" and abs(inv_amt - gw_gross) < 0.01:
                     decision = "MATCH"
@@ -666,18 +670,21 @@ class ReconciliationEngine:
                     reason_code = CanonicalReasonCode.FEE_RECONCILED
                     risk_level = "LOW"
                     confidence = 1.0
+                    amt_sim = 1.0
                 elif abs(inv_amt - gw_gross) >= 0.01:
                     decision = "REVIEW"
                     match_type = "AMOUNT_MISMATCH"
                     reason_code = CanonicalReasonCode.AMOUNT_MISMATCH
                     risk_level = "MEDIUM"
-                    confidence = round(amt_sim * 0.40 + 0.60, 4)
+                    confidence = round(computed["score"], 4)
                 else:
                     decision = "REVIEW"
                     match_type = "FEE_VARIANCE"
                     reason_code = CanonicalReasonCode.FEE_VARIANCE
                     risk_level = "HIGH"
-                    confidence = 0.70
+                    amt_sim = 0.50
+                    computed = self.scorer.compute_match_score(amt_sim, date_sim, ref_sim, cust_sim)
+                    confidence = round(computed["score"], 4)
             else:
                 diff_inv_gw = abs(inv_amt - gw_gross)
                 diff_gw_bank = abs(gw_gross - bank_credit)
@@ -723,6 +730,7 @@ class ReconciliationEngine:
                 context={
                     "reference": getattr(gw, "payment_reference", getattr(inv, "invoice_reference", "")),
                     "customer": getattr(inv, "customer_name", getattr(gw, "customer_name", "Customer")),
+                    "fee_cls": fee_classification,
                     "gateway_date": gw_d_str,
                     "bank_date": bk_d_str,
                     "delta_days": delta_days,
@@ -742,8 +750,8 @@ class ReconciliationEngine:
                 gateway_txn_ids_json=json.dumps([gw_id] if gw_id else []),
                 invoice_ids_json=json.dumps([inv_id] if inv_id else []),
                 amounts_json=json.dumps(amounts_dict),
-                primary_amount=gw_gross or inv_amt,
-                expected_amount=gw_net,
+                primary_amount=inv_amt if inv_amt > 0 else gw_gross,
+                expected_amount=gw_net if bank else gw_gross,
                 settled_amount=bank_credit,
                 variance_amount=variance,
                 decision=decision,
@@ -815,8 +823,15 @@ class ReconciliationEngine:
 
             reason_code = CanonicalReasonCode.MISSING_INVOICE
             decision = "REVIEW"
-            confidence = 0.65
             risk_level = "MEDIUM"
+
+            # Compute features for Missing Invoice (missing ERP leg)
+            amt_sim = 0.50 if abs(variance) < 0.01 else 0.25
+            date_sim = 1.0
+            ref_sim = 1.0
+            cust_sim = 1.0
+            computed = self.scorer.compute_match_score(amt_sim, date_sim, ref_sim, cust_sim)
+            confidence = round(computed["score"], 4)
 
             exp_data = ExplanationBuilder.build_explanation_and_action(
                 decision=decision,
@@ -853,10 +868,10 @@ class ReconciliationEngine:
                 recommended_action=exp_data["recommended_action"],
                 match_type="MISSING_INVOICE",
                 evidence_json=m2.get("evidence_json"),
-                amount_similarity=1.0 if abs(variance) < 0.01 else 0.50,
-                date_similarity=1.0,
-                reference_similarity=1.0,
-                customer_similarity=1.0,
+                amount_similarity=round(amt_sim, 4),
+                date_similarity=round(date_sim, 4),
+                reference_similarity=round(ref_sim, 4),
+                customer_similarity=round(cust_sim, 4),
                 composite_score=round(confidence, 4),
                 verified_by_ai=False,
                 ai_verification_status="NOT_REQUIRED",

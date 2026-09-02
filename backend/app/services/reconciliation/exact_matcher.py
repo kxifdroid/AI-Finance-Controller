@@ -16,11 +16,50 @@ Output:
 Tuple: (matched_pairs, remaining_a, remaining_b, matched_a_ids, matched_b_ids).
 """
 
+import re
 from datetime import date
 from typing import Dict, Any, List, Set, Tuple, Optional
 from app.config import settings
 from app.services.normalization import NormalizationService
 from app.services.reconciliation.evidence import EvidenceBuilder
+
+
+def extract_record_keys(rec: Any) -> Set[str]:
+    """Extracts all canonical, raw, and tokenized identifiers from a financial transaction record."""
+    keys = set()
+    for attr in [
+        "invoice_reference", "payment_reference", "reference", 
+        "order_id", "gateway_order_id", "utr", 
+        "invoice_id", "gateway_txn_id", "bank_txn_id",
+        "normalized_ref"
+    ]:
+        val = getattr(rec, attr, None)
+        if val:
+            val_str = str(val).strip()
+            if val_str:
+                if "_" in val_str:
+                    raw_suffix = val_str.split("_", 1)[1]
+                    keys.add(raw_suffix.lower())
+                    norm_suffix = NormalizationService.normalize_reference(raw_suffix)
+                    if norm_suffix:
+                        keys.add(norm_suffix)
+                keys.add(val_str.lower())
+                norm = NormalizationService.normalize_reference(val_str)
+                if norm:
+                    keys.add(norm)
+    
+    # Also extract structured tokens from description / narration / particulars
+    desc = getattr(rec, "description", getattr(rec, "normalized_desc", None))
+    if desc:
+        desc_str = str(desc)
+        tokens = re.findall(r'[A-Za-z0-9]+(?:[\-_/][A-Za-z0-9]+)+|[A-Za-z]+[0-9]+|[0-9]+[A-Za-z]+', desc_str)
+        for token in tokens:
+            keys.add(token.lower())
+            norm_t = NormalizationService.normalize_reference(token)
+            if norm_t:
+                keys.add(norm_t)
+                
+    return {k for k in keys if k and k != "none" and k != "null"}
 
 
 def can_auto_clear(
@@ -79,18 +118,11 @@ class ExactMatcher:
         unmatched_a = list(side_a_records)
         unmatched_b = list(side_b_records)
 
-        # Index Side B by normalized reference for O(1) candidate lookup
-        b_by_ref: Dict[str, List[Any]] = {}
+        # Index Side B by all extracted identifier keys for O(1) candidate lookup
+        b_by_key: Dict[str, List[Any]] = {}
         for b in unmatched_b:
-            b_ref = getattr(
-                b,
-                "normalized_ref",
-                NormalizationService.normalize_reference(
-                    getattr(b, "payment_reference", getattr(b, "reference", ""))
-                ),
-            )
-            if b_ref:
-                b_by_ref.setdefault(b_ref, []).append(b)
+            for k in extract_record_keys(b):
+                b_by_key.setdefault(k, []).append(b)
 
         for a in unmatched_a:
             a_id = getattr(
@@ -98,15 +130,8 @@ class ExactMatcher:
                 "invoice_id",
                 getattr(a, "gateway_txn_id", getattr(a, "bank_txn_id", None)),
             )
-            a_ref = getattr(
-                a,
-                "normalized_ref",
-                NormalizationService.normalize_reference(
-                    getattr(a, "invoice_reference", getattr(a, "payment_reference", getattr(a, "reference", "")))
-                ),
-            )
-
-            if not a_ref or a_ref not in b_by_ref:
+            a_keys = extract_record_keys(a)
+            if not a_keys:
                 continue
 
             if allow_fee_variance:
@@ -129,9 +154,17 @@ class ExactMatcher:
                 getattr(a, "invoice_date", getattr(a, "transaction_date", date.today())),
             )
 
-            candidates = b_by_ref.get(a_ref, [])
-            exact_partner = None
+            # Retrieve candidate Side B records that share at least one identifier key
+            candidates = []
+            seen_cand_ids = set()
+            for k in a_keys:
+                for b_cand in b_by_key.get(k, []):
+                    b_cid = getattr(b_cand, "gateway_txn_id", getattr(b_cand, "bank_txn_id", getattr(b_cand, "invoice_id", None)))
+                    if b_cid and b_cid not in seen_cand_ids and b_cid not in matched_b_ids:
+                        candidates.append(b_cand)
+                        seen_cand_ids.add(b_cid)
 
+            exact_partner = None
             for b in candidates:
                 b_id = getattr(b, "gateway_txn_id", getattr(b, "bank_txn_id", None))
                 if b_id in matched_b_ids:
@@ -161,6 +194,8 @@ class ExactMatcher:
                 b_id = getattr(exact_partner, "gateway_txn_id", getattr(exact_partner, "bank_txn_id", None))
                 matched_a_ids.add(a_id)
                 matched_b_ids.add(b_id)
+
+                a_ref = getattr(a, "invoice_reference", getattr(a, "payment_reference", getattr(a, "reference", a_id)))
 
                 max_amt = max(abs(a_amt), abs(float(getattr(exact_partner, "amount", 0.0))))
                 decision = "MATCH"

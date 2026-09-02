@@ -393,22 +393,22 @@ export function MatchDetailModal({ matchId, onClose }: MatchDetailModalProps) {
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                   <EvidenceSignal
                     label="Amount Alignment"
-                    score={detail.features?.amount_similarity ?? 1.0}
+                    score={typeof detail.features?.amount_similarity === "number" ? detail.features.amount_similarity : (detail.decision === "MATCH" ? 1.0 : 0.0)}
                     weight={0.40}
                   />
                   <EvidenceSignal
                     label="Reference Match"
-                    score={detail.features?.reference_similarity ?? 1.0}
+                    score={typeof detail.features?.reference_similarity === "number" ? detail.features.reference_similarity : (detail.decision === "MATCH" ? 1.0 : 0.5)}
                     weight={0.25}
                   />
                   <EvidenceSignal
                     label="Settlement Date"
-                    score={detail.features?.date_similarity ?? 1.0}
+                    score={typeof detail.features?.date_similarity === "number" ? detail.features.date_similarity : (detail.decision === "MATCH" ? 1.0 : 0.5)}
                     weight={0.20}
                   />
                   <EvidenceSignal
                     label="Customer Entity"
-                    score={detail.features?.customer_similarity ?? 1.0}
+                    score={typeof detail.features?.customer_similarity === "number" ? detail.features.customer_similarity : (detail.decision === "MATCH" ? 1.0 : 0.5)}
                     weight={0.15}
                   />
                 </div>
@@ -418,10 +418,16 @@ export function MatchDetailModal({ matchId, onClose }: MatchDetailModalProps) {
                   <div className="pt-3 border-t border-border space-y-2 text-xs text-content-secondary animate-fade-in">
                     <div className="flex items-center justify-between font-mono text-[11px]">
                       <span className="text-content font-bold">Composite Score: {(detail.confidence_score * 100).toFixed(2)}%</span>
-                      <span className="text-content-muted">Deterministic Weighting: 0.40(Amt) + 0.25(Ref) + 0.20(Date) + 0.15(Cust)</span>
+                      <span className="text-content-muted">Weighting: 0.40(Amt) + 0.25(Ref) + 0.20(Date) + 0.15(Cust)</span>
                     </div>
+                    {detail.features && (
+                      <div className="text-[11px] font-mono text-content-secondary bg-surface-elevated p-2 rounded border border-border flex items-center justify-between">
+                        <span>Breakdown: 0.40({((detail.features.amount_similarity ?? 0) * 100).toFixed(0)}%) + 0.25({((detail.features.reference_similarity ?? 0) * 100).toFixed(0)}%) + 0.20({((detail.features.date_similarity ?? 0) * 100).toFixed(0)}%) + 0.15({((detail.features.customer_similarity ?? 0) * 100).toFixed(0)}%)</span>
+                        <span className="font-bold text-primary">{(((detail.features.composite_score ?? detail.confidence_score)) * 100).toFixed(2)}%</span>
+                      </div>
+                    )}
                     <p className="text-[11px] text-content-muted font-mono leading-relaxed">
-                      Deterministic scoring model applies exponential decay to unexplained amount variances ($e^{'{ -10 \\times \\Delta }'}$). Explicit fee tolerance is only granted when verified gateway MDR and GST deductions are present.
+                      Deterministic scoring model evaluates 4 multi-source dimensions. Unexplained variances or missing counterpart records incur proportional mathematical score reductions.
                     </p>
                   </div>
                 )}

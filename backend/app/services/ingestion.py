@@ -118,9 +118,9 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "gateway_txn_id": {
             "required": True,
             "synonyms": [
-                "gateway transaction id", "txn id", "transaction id", "payment id", 
-                "gateway_txn_id", "gateway txn id", "payment_id", "charge id", 
-                "pg_txn_id", "stripe id", "razorpay_payment_id", "transaction_id"
+                "gateway transaction id", "gateway_transaction_id", "pg_txn_id", "razorpay_payment_id",
+                "gateway_txn_id", "gateway txn id", "payment_id", "payment id", "charge id", 
+                "stripe id", "transaction_id", "txn id", "transaction id"
             ],
             "excludes": ["order id", "order number", "invoice id", "invoice number"]
         },
@@ -129,9 +129,9 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "synonyms": [
                 "order id", "order number", "order_id", "order_no", "ord id", 
                 "payment reference", "payment_reference", "merchant_order_id", 
-                "reference_id", "reference", "ref"
+                "reference_id", "reference", "ref", "invoice id", "invoice_id", "inv id"
             ],
-            "excludes": ["gateway transaction id", "txn id", "charge id", "payment id"]
+            "excludes": ["gateway transaction id", "charge id"]
         },
         "gross_amount": {
             "required": True,
@@ -145,7 +145,7 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "required": False,
             "synonyms": [
                 "net amount", "settlement amount", "amount after fee", "payout amount", 
-                "net_amount", "net_settlement", "settled amount", "net payout"
+                "net_amount", "net_settlement", "settled amount", "net payout", "settlement_amount"
             ],
             "excludes": ["gross amount", "fee", "gateway fee", "tax", "charge amount"]
         },
@@ -160,14 +160,14 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "tax_on_fee": {
             "required": False,
             "synonyms": [
-                "tax", "tax on fee", "tax_on_fee", "gst", "vat", "service tax", "tax amount"
+                "tax", "tax on fee", "tax_on_fee", "gst", "gst on fee", "gst_on_fee", "vat", "service tax", "tax amount"
             ],
             "excludes": ["amount", "gross", "net", "gross amount", "net amount"]
         },
         "transaction_date": {
             "required": True,
             "synonyms": [
-                "transaction date", "txn date", "date", "created at", "payment date", 
+                "transaction date", "txn date", "date", "created at", "payment date", "payment_date",
                 "transaction_date", "captured_at", "paid at"
             ],
             "excludes": ["settlement date", "expiry date"]
@@ -184,9 +184,9 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "required": False,
             "synonyms": [
                 "razorpay order id", "razorpay_order_id", "gateway order id",
-                "pg order id", "stripe_payment_intent", "checkout_id"
+                "pg order id", "stripe_payment_intent", "checkout_id", "invoice id", "invoice_id", "settlement id", "settlement_id"
             ],
-            "excludes": ["payment id", "txn id", "transaction id"]
+            "excludes": ["txn id", "transaction id"]
         },
         "payment_method": {
             "required": False,
@@ -225,7 +225,7 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "required": True,
             "synonyms": [
                 "bank transaction id", "bank txn id", "txn id", "transaction id", 
-                "reference id", "bank_txn_id", "utr", "chq no", "cheque number", 
+                "reference id", "bank_txn_id", "transaction_id", "chq no", "cheque number", 
                 "ref no", "tran id", "journal entry", "transaction #"
             ],
             "excludes": ["order id", "invoice id", "customer id"]
@@ -250,7 +250,8 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "required": False,
             "synonyms": [
                 "reference", "description", "particulars", "narration", "remarks", 
-                "ref", "order id", "ord id", "payment reference", "ref no"
+                "ref", "order id", "ord id", "payment reference", "ref no",
+                "bank reference", "bank_reference", "settlement id", "settlement_id"
             ],
             "excludes": []
         },
@@ -274,7 +275,7 @@ TARGET_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "required": False,
             "synonyms": [
                 "utr", "utr number", "utr no", "unique transaction reference",
-                "neft ref", "rtgs ref", "imps ref", "bank reference"
+                "neft ref", "rtgs ref", "imps ref", "bank reference", "bank_reference", "settlement id", "settlement_id"
             ],
             "excludes": ["order id", "invoice id"]
         },
@@ -507,9 +508,8 @@ class IngestionService:
 
         for idx, row in df.iterrows():
             try:
-                b_id = str(row["bank_txn_id"]).strip()
-                if dataset_id:
-                    b_id = f"{dataset_id[:8]}_{b_id}"
+                raw_b_id = str(row["bank_txn_id"]).strip()
+                b_id = f"{dataset_id[:8]}_{raw_b_id}" if dataset_id else raw_b_id
                 t_date = NormalizationService.normalize_date(row["transaction_date"])
                 raw_amt = row["amount"]
                 norm_amt = NormalizationService.normalize_amount(raw_amt)
@@ -517,7 +517,7 @@ class IngestionService:
                 t_type = str(row.get("transaction_type", "CREDIT")).upper()
                 
                 # Handle separate credit/debit columns
-                credit_amt_raw = row.get("credit_amount")
+                credit_amt_raw = row.get("credit_amount") if "credit_amount" in row else None
                 debit_amt_raw = row.get("debit_amount")
                 credit_amt = NormalizationService.normalize_amount(credit_amt_raw) if credit_amt_raw is not None and pd.notnull(credit_amt_raw) and str(credit_amt_raw).strip() else None
                 debit_amt = NormalizationService.normalize_amount(debit_amt_raw) if debit_amt_raw is not None and pd.notnull(debit_amt_raw) and str(debit_amt_raw).strip() else None
@@ -529,15 +529,19 @@ class IngestionService:
                     norm_amt = debit_amt
                     t_type = "DEBIT"
                         
-                desc = str(row.get("description", ""))
-                ref = str(row.get("reference", ""))
+                desc = str(row.get("description", row.get("narration", "")))
+                ref = str(row.get("reference", row.get("bank_reference", row.get("settlement_id", ""))))
+                if not ref or not ref.strip():
+                    ref = str(row.get("bank_reference", row.get("settlement_id", desc or raw_b_id)))
+
                 norm_ref = NormalizationService.normalize_reference(ref)
                 norm_desc = NormalizationService.normalize_description(desc)
 
                 # Extended fields
                 value_date_raw = row.get("value_date")
                 v_date = NormalizationService.normalize_date(value_date_raw) if value_date_raw is not None and pd.notnull(value_date_raw) and str(value_date_raw).strip() else None
-                utr_val = str(row.get("utr", "")).strip() if "utr" in row and pd.notnull(row.get("utr")) else None
+                utr_raw = row.get("utr", row.get("bank_reference", row.get("settlement_id", "")))
+                utr_val = str(utr_raw).strip() if utr_raw is not None and pd.notnull(utr_raw) and str(utr_raw).strip() else None
                 currency_val = str(row.get("currency", "INR")).strip().upper() if "currency" in row and pd.notnull(row.get("currency")) else "INR"
                 balance_raw = row.get("balance")
                 balance_val = NormalizationService.normalize_amount(balance_raw) if balance_raw is not None and pd.notnull(balance_raw) and str(balance_raw).strip() else None
@@ -610,19 +614,18 @@ class IngestionService:
 
         for idx, row in df.iterrows():
             try:
-                g_id = str(row["gateway_txn_id"]).strip()
-                if dataset_id:
-                    g_id = f"{dataset_id[:8]}_{g_id}"
+                raw_g_id = str(row["gateway_txn_id"]).strip()
+                g_id = f"{dataset_id[:8]}_{raw_g_id}" if dataset_id else raw_g_id
                 t_date = NormalizationService.normalize_date(row["transaction_date"])
                 
                 raw_amt = row.get("gross_amount", row.get("amount", 0.0))
                 gross_amt = NormalizationService.normalize_amount(raw_amt)
                 
-                gateway_fee = NormalizationService.normalize_amount(row.get("gateway_fee", 0.0))
-                tax_on_fee = NormalizationService.normalize_amount(row.get("tax_on_fee", 0.0))
+                gateway_fee = NormalizationService.normalize_amount(row.get("gateway_fee", row.get("fee", 0.0)))
+                tax_on_fee = NormalizationService.normalize_amount(row.get("tax_on_fee", row.get("gst_on_fee", 0.0)))
                 
                 net_derived = False
-                raw_net = row.get("net_amount", row.get("net_settlement"))
+                raw_net = row.get("net_amount", row.get("net_settlement", row.get("settlement_amount")))
                 if raw_net is not None and not pd.isna(raw_net) and str(raw_net).strip():
                     net_amt = NormalizationService.normalize_amount(raw_net)
                 else:
@@ -630,11 +633,19 @@ class IngestionService:
                     net_derived = True
 
                 cust = str(row.get("customer_name", ""))
-                ref = str(row.get("payment_reference", row.get("order_id", "")))
+                ref = str(row.get("payment_reference", row.get("order_id", row.get("invoice_id", ""))))
+                if not ref or not ref.strip():
+                    ref = str(row.get("invoice_id", row.get("order_id", raw_g_id)))
                 status = str(row.get("status", "CAPTURED")).upper()
 
                 # Extended canonical fields
-                gw_order_id = str(row["gateway_order_id"]).strip() if "gateway_order_id" in row and pd.notnull(row["gateway_order_id"]) else (str(row["order_id"]).strip() if "order_id" in row and pd.notnull(row["order_id"]) else None)
+                gw_order_id = str(row["gateway_order_id"]).strip() if "gateway_order_id" in row and pd.notnull(row["gateway_order_id"]) else (
+                    str(row["order_id"]).strip() if "order_id" in row and pd.notnull(row["order_id"]) else (
+                        str(row["invoice_id"]).strip() if "invoice_id" in row and pd.notnull(row["invoice_id"]) else (
+                            str(row["settlement_id"]).strip() if "settlement_id" in row and pd.notnull(row["settlement_id"]) else None
+                        )
+                    )
+                )
                 pay_method = str(row["payment_method"]).strip().upper() if "payment_method" in row and pd.notnull(row["payment_method"]) else None
                 curr_val = str(row.get("currency", "INR")).strip().upper() if "currency" in row and pd.notnull(row.get("currency")) else "INR"
                 gw_name = str(row.get("gateway_name", row.get("gateway", ""))).strip().lower() if ("gateway_name" in row or "gateway" in row) and pd.notnull(row.get("gateway_name", row.get("gateway"))) else None
@@ -714,14 +725,15 @@ class IngestionService:
 
         for idx, row in df.iterrows():
             try:
-                i_id = str(row["invoice_id"]).strip()
-                if dataset_id:
-                    i_id = f"{dataset_id[:8]}_{i_id}"
+                raw_i_id = str(row["invoice_id"]).strip()
+                i_id = f"{dataset_id[:8]}_{raw_i_id}" if dataset_id else raw_i_id
                 t_date = NormalizationService.normalize_date(row["invoice_date"])
                 raw_amt = row["amount"]
                 norm_amt = NormalizationService.normalize_amount(raw_amt)
                 cust = str(row.get("customer_name", ""))
                 ref = str(row.get("invoice_reference", row.get("order_id", "")))
+                if not ref or not ref.strip():
+                    ref = raw_i_id
                 status = str(row.get("status", "ISSUED")).upper()
 
                 # Extended canonical fields

@@ -34,9 +34,22 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """Create all database tables."""
+    """Create all database tables and perform lightweight column migrations if needed."""
     # Import all models to ensure they are registered with Base.metadata
     import app.models  # noqa: F401
     # Also import approval service to register ApprovalRequest model
     import app.services.approval  # noqa: F401
     Base.metadata.create_all(bind=engine)
+
+    # SQLite lightweight migration resilience for added columns
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(engine)
+        if "matches" in inspector.get_table_names():
+            columns = [c["name"] for c in inspector.get_columns("matches")]
+            if "display_order" not in columns:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE matches ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0;"))
+    except Exception:
+        pass
+

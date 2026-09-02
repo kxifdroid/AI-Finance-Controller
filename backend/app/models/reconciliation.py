@@ -52,6 +52,8 @@ class ReconciliationRun(Base):
 
 
 class Match(Base):
+    # New deterministic display order field for UI rendering
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     """
     Represents a reconciled match relationship between Bank, Gateway, and Invoice records.
     Stores multi-factor score decomposition and AI verification audit trail.
